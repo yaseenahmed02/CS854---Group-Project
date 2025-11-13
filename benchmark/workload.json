@@ -1,0 +1,85 @@
+{
+  "workload_name": "Software Engineering RAG Benchmark",
+  "version": "1.0",
+  "description": "Benchmark queries for evaluating vector-only vs hybrid retrieval in multimodal RAG",
+  "queries": [
+    {
+      "id": "semantic_1",
+      "query": "How can I improve the performance of my application's data access layer?",
+      "type": "semantic",
+      "expected_topics": ["caching", "database", "performance"],
+      "reasoning": "Semantic query requiring understanding of performance optimization concepts"
+    },
+    {
+      "id": "semantic_2",
+      "query": "What security measures should I implement to protect user sessions?",
+      "type": "semantic",
+      "expected_topics": ["authentication", "JWT", "security"],
+      "reasoning": "Semantic query about security best practices"
+    },
+    {
+      "id": "semantic_3",
+      "query": "Explain the strategy for handling temporary data in a distributed system",
+      "type": "semantic",
+      "expected_topics": ["caching", "Redis", "architecture"],
+      "reasoning": "High-level architectural question requiring conceptual understanding"
+    },
+    {
+      "id": "keyword_1",
+      "query": "validateToken",
+      "type": "keyword",
+      "expected_topics": ["authentication", "JWT", "token validation"],
+      "reasoning": "Exact function name search - should benefit from BM25"
+    },
+    {
+      "id": "keyword_2",
+      "query": "AUTH_002",
+      "type": "keyword",
+      "expected_topics": ["authentication", "error codes"],
+      "reasoning": "Specific error code lookup - lexical match critical"
+    },
+    {
+      "id": "keyword_3",
+      "query": "allkeys-lru",
+      "type": "keyword",
+      "expected_topics": ["caching", "Redis", "eviction policy"],
+      "reasoning": "Technical term that requires exact string matching"
+    },
+    {
+      "id": "hybrid_1",
+      "query": "How does the JWT token expiration work in the authentication system?",
+      "type": "hybrid",
+      "expected_topics": ["authentication", "JWT", "token expiration"],
+      "reasoning": "Contains both semantic intent and specific keyword 'JWT'"
+    },
+    {
+      "id": "hybrid_2",
+      "query": "What is the cache hit ratio target and why is it important?",
+      "type": "hybrid",
+      "expected_topics": ["caching", "performance metrics"],
+      "reasoning": "Semantic question with specific technical term 'cache hit ratio'"
+    },
+    {
+      "id": "hybrid_3",
+      "query": "Explain how the APIClient class handles retry logic with exponential backoff",
+      "type": "hybrid",
+      "expected_topics": ["API client", "retry logic", "error handling"],
+      "reasoning": "Mix of class name (keyword) and conceptual question (semantic)"
+    },
+    {
+      "id": "hybrid_4",
+      "query": "What are the connection pool settings for the database and what are the best practices?",
+      "type": "hybrid",
+      "expected_topics": ["database", "deployment", "configuration"],
+      "reasoning": "Specific technical term 'connection pool' with broader best practices question"
+    }
+  ],
+  "metadata": {
+    "total_queries": 10,
+    "semantic_count": 3,
+    "keyword_count": 3,
+    "hybrid_count": 4,
+    "created_date": "2025-01-13",
+    "corpus_size": "small_synthetic"
+  }
+}
