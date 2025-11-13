@@ -3,10 +3,16 @@ Vector Retriever
 Dense retrieval using embeddings and cosine similarity.
 """
 
+import sys
+from pathlib import Path
+
+# Add project root to Python path
+project_root = Path(__file__).parent.parent
+sys.path.insert(0, str(project_root))
+
 import numpy as np
 import json
 from typing import List, Dict, Any, Tuple
-from pathlib import Path
 from embeddings.embed import EmbeddingGenerator
 from utils.timer import Timer
 

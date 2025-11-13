@@ -3,6 +3,13 @@ RAG Pipeline
 End-to-end retrieval-augmented generation pipeline with vLLM integration.
 """
 
+import sys
+from pathlib import Path
+
+# Add project root to Python path
+project_root = Path(__file__).parent.parent
+sys.path.insert(0, str(project_root))
+
 import requests
 import json
 from typing import Dict, Any, Optional

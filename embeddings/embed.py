@@ -3,10 +3,16 @@ Embeddings Module
 Generates embeddings for text, code, and images using SentenceTransformers and CLIP.
 """
 
+import sys
+from pathlib import Path
+
+# Add project root to Python path
+project_root = Path(__file__).parent.parent
+sys.path.insert(0, str(project_root))
+
 import numpy as np
 import json
 from typing import List, Dict, Any, Optional
-from pathlib import Path
 from sentence_transformers import SentenceTransformer
 from utils.timer import Timer, measure_time
 

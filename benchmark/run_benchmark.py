@@ -3,10 +3,16 @@ Benchmark Runner
 Executes benchmark workload and collects performance metrics.
 """
 
+import sys
+from pathlib import Path
+
+# Add project root to Python path
+project_root = Path(__file__).parent.parent
+sys.path.insert(0, str(project_root))
+
 import json
 import csv
 import time
-from pathlib import Path
 from datetime import datetime
 from typing import List, Dict, Any
 from rag.pipeline import RAGPipeline
