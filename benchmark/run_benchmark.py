@@ -56,7 +56,7 @@ class BenchmarkRunner:
             results_dir: Directory to save results
         """
 
-        check_gpu_available() # asserting GPU availability. If no GPU, raise error and exit. Without GPU, model won't load anyway
+        # check_gpu_available() # asserting GPU availability. If no GPU, raise error and exit. Without GPU, model won't load anyway
 
         self.workload_file = Path(workload_file)
         self.embeddings_dir = embeddings_dir
