@@ -18,31 +18,53 @@ from typing import List, Dict, Any
 from rag.pipeline import RAGPipeline
 from benchmark.metrics import MetricsCalculator
 from utils.timer import Timer, PerformanceTracker
+from vllm import LLM
+import torch
+
+
+def assert_gpu_available():
+    """Ensure GPU is available for vLLM."""
+    if not torch.cuda.is_available():
+        raise RuntimeError(
+            "❌ No GPU detected! vLLM requires an NVIDIA GPU.\n"
+            "This machine cannot run the benchmark.\n"
+            "Please run this script on a CUDA-enabled GPU instance "
+            "(e.g., Colab Pro, RunPod, AWS g5, Lambda GPU)."
+        )
+
+    device_name = torch.cuda.get_device_name(0)
+    print(f"✓ GPU detected: {device_name}")
 
 
 class BenchmarkRunner:
     """Run benchmarks comparing vector vs hybrid retrieval."""
 
     def __init__(self,
+                 vllm: LLM = None,
                  workload_file: str = 'benchmark/workload.json',
                  embeddings_dir: str = 'data/processed/embeddings',
                  chunks_file: str = 'data/processed/chunks.json',
-                 vllm_url: str = 'http://localhost:8000',
                  results_dir: str = 'benchmark/results'):
         """
         Initialize benchmark runner.
 
         Args:
+            vllm: Pre-initialized vLLM instance
             workload_file: Path to workload JSON file
             embeddings_dir: Directory with embeddings
             chunks_file: Path to chunks JSON
-            vllm_url: vLLM server URL
             results_dir: Directory to save results
         """
+
+        check_gpu_available() # asserting GPU availability. If no GPU, raise error and exit. Without GPU, model won't load anyway
+
         self.workload_file = Path(workload_file)
         self.embeddings_dir = embeddings_dir
         self.chunks_file = chunks_file
-        self.vllm_url = vllm_url
+        if vllm is None:
+            self.vllm = LLM(model="meta-llama/Meta-Llama-3-8B")
+        else:
+            self.vllm = vllm
         self.results_dir = Path(results_dir)
         self.results_dir.mkdir(parents=True, exist_ok=True)
 
@@ -92,7 +114,7 @@ class BenchmarkRunner:
                 retriever_type=method,
                 embeddings_dir=self.embeddings_dir,
                 chunks_file=self.chunks_file,
-                vllm_url=self.vllm_url,
+                vllm = self.vllm,
                 top_k=top_k,
                 alpha=alpha
             )
@@ -288,13 +310,11 @@ if __name__ == '__main__':
                        help='Number of documents to retrieve')
     parser.add_argument('--alpha', type=float, default=0.5,
                        help='Hybrid retrieval alpha (BM25 weight)')
-    parser.add_argument('--vllm-url', type=str, default='http://localhost:8000',
-                       help='vLLM server URL')
 
     args = parser.parse_args()
 
     # Run benchmark
-    runner = BenchmarkRunner(vllm_url=args.vllm_url)
+    runner = BenchmarkRunner()
     results = runner.run_benchmark(
         methods=args.methods,
         top_k=args.top_k,
