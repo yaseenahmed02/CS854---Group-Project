@@ -20,6 +20,7 @@ from benchmark.metrics import MetricsCalculator
 from utils.timer import Timer, PerformanceTracker
 from vllm import LLM
 import torch
+import os
 
 
 def assert_gpu_available():
@@ -56,8 +57,9 @@ class BenchmarkRunner:
             results_dir: Directory to save results
         """
 
-        # check_gpu_available() # asserting GPU availability. If no GPU, raise error and exit. Without GPU, model won't load anyway
-
+        # assert_gpu_available() # asserting GPU availability. If no GPU, raise error and exit. Without GPU, model won't load anyway
+        os.environ["VLLM_USE_V1"] = "0"                             # Use vLLM v0           
+        os.environ["CUDA_VISIBLE_DEVICES"] = "0"                    # Ensure only BlackWell is used
         self.workload_file = Path(workload_file)
         self.embeddings_dir = embeddings_dir
         self.chunks_file = chunks_file

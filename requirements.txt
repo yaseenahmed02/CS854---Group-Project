@@ -24,3 +24,6 @@ tqdm>=4.65.0
 # Development and testing (optional)
 # pytest>=7.4.0
 # jupyter>=1.0.0
+
+# vLLM for LLM inference
+vllm<0.11
