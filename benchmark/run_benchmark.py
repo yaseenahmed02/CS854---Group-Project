@@ -306,7 +306,7 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser(description='Run RAG benchmark')
     parser.add_argument('--methods', nargs='+', default=['vector', 'hybrid'],
-                       choices=['vector', 'hybrid'],
+                       choices=['vector', 'hybrid', 'qdrant'],
                        help='Retrieval methods to benchmark')
     parser.add_argument('--top-k', type=int, default=5,
                        help='Number of documents to retrieve')

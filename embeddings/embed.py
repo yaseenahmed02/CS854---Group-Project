@@ -15,6 +15,8 @@ import json
 from typing import List, Dict, Any, Optional
 from sentence_transformers import SentenceTransformer
 from utils.timer import Timer, measure_time
+from qdrant_client import QdrantClient
+from qdrant_client.models import Distance, VectorParams, PointStruct
 
 
 class EmbeddingGenerator:
@@ -136,6 +138,45 @@ class EmbeddingGenerator:
         info_file = output_path / "embedding_info.json"
         with open(info_file, 'w', encoding='utf-8') as f:
             json.dump(info, f, indent=2)
+
+        # Qdrant setup
+        collection_name = "embeddings"
+        print(f"Storing {len(embeddings)} embeddings in Qdrant collection {collection_name}...")
+
+        qdrant_output = output_path / "qdrant_db"
+        qdrant = QdrantClient(path=qdrant_output)
+        
+        ## Check if collection exists
+        collections = qdrant.get_collections().collections
+        collection_exists = any(c.name == collection_name for c in collections)
+        if collection_exists:     # recreate the collection
+            print(f"Collection {collection_name} already exists. Deleting...")
+            qdrant.delete_collection(collection_name=collection_name)
+        
+        ## Create collection
+        embedding_dim = embeddings.shape[1]
+        print(f"Creating Qdrant collection: {collection_name} (dim={embedding_dim})")
+        qdrant.create_collection(
+            collection_name=collection_name,
+            vectors_config=VectorParams(
+                size=embedding_dim,
+                distance=Distance.COSINE
+            )
+        )
+
+        ## Upsert embeddings into Qdrant
+        points = [
+            PointStruct(
+                id=i,
+                vector=embedding.tolist(),
+                payload=meta
+            )
+            for i, (embedding, meta) in enumerate(zip(embeddings, metadata))
+        ]
+        qdrant.upsert(
+            collection_name=collection_name,
+            points=points
+        )
         print(f"Saved embedding info to {info_file}")
 
     def load_embeddings(self, input_dir: str) -> tuple:
