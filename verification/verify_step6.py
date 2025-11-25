@@ -29,8 +29,9 @@ def test_code_gen():
                 }]
             }
             
-            # Initialize pipeline
-            pipeline = RAGPipeline(retriever_type='hybrid', vllm_url='http://mock')
+            # Initialize pipeline with mock vllm to avoid loading model
+            mock_vllm = MagicMock()
+            pipeline = RAGPipeline(retriever_type='hybrid', vllm=mock_vllm)
             
             # Ensure pipeline uses our mock (it should because we patched the class used in __init__)
             # But RAGPipeline assigns self.retriever = HybridRetriever(...)

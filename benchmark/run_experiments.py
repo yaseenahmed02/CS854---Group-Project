@@ -55,7 +55,7 @@ def get_collection_name(repo: str, version: str) -> str:
     ver_san = sanitize_path_component(version)
     return f"{repo_san}_{ver_san}"
 
-def run_experiments(limit: int = None, mock_vllm: bool = False, split: str = "test"):
+def run_experiments(limit: int = None, mock_vllm: bool = False, split: str = "test", retrieval_limit: int = None):
     """
     Run all experiments.
     """
@@ -146,11 +146,17 @@ def run_experiments(limit: int = None, mock_vllm: bool = False, split: str = "te
                         instance_id=instance_id,
                         strategy=config['strategies'],
                         visual_mode=config['visual_mode'],
+                        visual_mode=config['visual_mode'],
                         top_k=top_k
                     )
                     
                     # NOW run query
-                    result = pipeline.query(problem_statement, mode="code_gen")
+                    # Pass retrieval_limit if set
+                    query_kwargs = {"mode": "code_gen"}
+                    if retrieval_limit:
+                        query_kwargs["retrieval_token_limit"] = retrieval_limit
+                        
+                    result = pipeline.query(problem_statement, **query_kwargs)
                     
                     end_time = time.time()
                     
@@ -194,6 +200,7 @@ if __name__ == "__main__":
     parser.add_argument("--limit", type=int, default=None, help="Limit instances per experiment")
     parser.add_argument("--mock", action="store_true", help="Mock vLLM")
     parser.add_argument("--split", type=str, default="test", help="Dataset split (dev/test)")
+    parser.add_argument("--retrieval_limit", type=int, default=None, help="Token limit for retrieval context (e.g. 13000)")
     args = parser.parse_args()
     
-    run_experiments(limit=args.limit, mock_vllm=args.mock, split=args.split)
+    run_experiments(limit=args.limit, mock_vllm=args.mock, split=args.split, retrieval_limit=args.retrieval_limit)

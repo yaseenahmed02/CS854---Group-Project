@@ -15,6 +15,7 @@ from rag.prompt_builder import PromptBuilder
 from utils.timer import Timer
 from vllm import LLM, SamplingParams
 from utils.patch_cleaner import extract_diff
+import tiktoken
 
 
 class RAGPipeline:
@@ -26,7 +27,8 @@ class RAGPipeline:
                  embeddings_dir: str = 'data/processed/embeddings',
                  chunks_file: str = 'data/processed/chunks.json',
                  top_k: int = 5,
-                 alpha: float = 0.5):
+                 alpha: float = 0.5,
+                 tokenizer_name: str = "gpt-4o"):
         """
         Initialize RAG pipeline.
 
@@ -36,7 +38,9 @@ class RAGPipeline:
             embeddings_dir: Directory with embeddings
             chunks_file: Path to chunks JSON
             top_k: Number of documents to retrieve
+            top_k: Number of documents to retrieve
             alpha: Hybrid retrieval weight (BM25 vs vector)
+            tokenizer_name: Name of the tokenizer to use for counting tokens
         """
         self.retriever_type = retriever_type
         if vllm is None:
@@ -62,6 +66,17 @@ class RAGPipeline:
 
         # Initialize prompt builder
         self.prompt_builder = PromptBuilder(max_context_length=4096)
+        
+        # Initialize tokenizer
+        try:
+            self.tokenizer = tiktoken.encoding_for_model(tokenizer_name)
+        except Exception as e:
+            print(f"Warning: Could not load tokenizer for {tokenizer_name}. Fallback to cl100k_base. Error: {e}")
+            try:
+                self.tokenizer = tiktoken.get_encoding("cl100k_base")
+            except:
+                self.tokenizer = None
+                print("Error: Could not load tiktoken.")
 
         print(f"RAG Pipeline initialized with {retriever_type} retrieval")
 
@@ -69,7 +84,8 @@ class RAGPipeline:
              query: str,
              max_tokens: int = 256,
              temperature: float = 0.7,
-             mode: str = "qa") -> Dict[str, Any]:
+             mode: str = "qa",
+             retrieval_token_limit: Optional[int] = None) -> Dict[str, Any]:
         """
         Execute full RAG pipeline: retrieve + generate.
 
@@ -77,7 +93,10 @@ class RAGPipeline:
             query: User query
             max_tokens: Max tokens to generate
             temperature: LLM temperature
+            max_tokens: Max tokens to generate
+            temperature: LLM temperature
             mode: 'qa' or 'code_gen'
+            retrieval_token_limit: Optional limit on tokens from retrieved documents
 
         Returns:
             Dictionary with results and metrics
@@ -91,6 +110,25 @@ class RAGPipeline:
 
         retrieval_time_ms = retrieval_timer.stop()
 
+        # 1.5 Apply Token Limit (if set)
+        if retrieval_token_limit and self.tokenizer and retrieved_docs:
+            selected_docs = []
+            current_tokens = 0
+            for doc in retrieved_docs:
+                content = doc.get('text', '')
+                # Estimate or count tokens
+                doc_tokens = len(self.tokenizer.encode(content))
+                
+                if current_tokens + doc_tokens <= retrieval_token_limit:
+                    selected_docs.append(doc)
+                    current_tokens += doc_tokens
+                else:
+                    # Stop adding if we exceed limit
+                    break
+            
+            # Update retrieved_docs to only contain selected ones
+            retrieved_docs = selected_docs
+
         # 2. Prompt building
         if mode == "code_gen":
             # For code gen, we need a specific prompt
@@ -103,6 +141,7 @@ class RAGPipeline:
                 # Naively take the top document as the target file
                 # In a real scenario, we might want to let the LLM decide or pass it explicitly
                 top_doc = retrieved_docs[0]
+                
                 # If we have the full file content in 'text' or can load it
                 # The retrieved doc 'text' might be a chunk.
                 # If we want to rewrite the ENTIRE file, we need the full content.
@@ -135,13 +174,19 @@ class RAGPipeline:
             )
             
             prompt = f"{system_prompt}\n\n{user_prompt}"
-            prompt_tokens = len(prompt) // 4 # Estimate
+            if self.tokenizer:
+                prompt_tokens = len(self.tokenizer.encode(prompt))
+            else:
+                prompt_tokens = len(prompt) // 4 # Estimate
             
         else:
             # Standard QA prompt
             prompt_result = self.prompt_builder.build_prompt(query, retrieved_docs)
             prompt = prompt_result['prompt']
-            prompt_tokens = prompt_result['estimated_tokens']
+            if self.tokenizer:
+                prompt_tokens = len(self.tokenizer.encode(prompt))
+            else:
+                prompt_tokens = prompt_result['estimated_tokens']
 
         # 3. LLM generation
         generation_timer = Timer()
