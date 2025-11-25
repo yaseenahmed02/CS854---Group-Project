@@ -15,7 +15,6 @@ import json
 from typing import Dict, Any, Optional
 from retrieval.vector_retriever import VectorRetriever
 from retrieval.hybrid_retriever import HybridRetriever
-from retrieval.qdrant_retriever import QdrantRetriever
 from rag.prompt_builder import PromptBuilder
 from utils.timer import Timer
 from vllm import LLM, SamplingParams
@@ -59,12 +58,6 @@ class RAGPipeline:
                 embeddings_dir=embeddings_dir,
                 chunks_file=chunks_file,
                 alpha=alpha
-            )
-        elif retriever_type == 'qdrant':
-            self.retriever = QdrantRetriever(
-                qdrant_path=str(Path(embeddings_dir) / 'qdrant_db'),
-                chunks_file=chunks_file,
-                collection_name='embeddings'
             )
         else:
             raise ValueError(f"Unknown retriever type: {retriever_type}")
