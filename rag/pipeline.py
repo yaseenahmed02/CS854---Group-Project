@@ -13,6 +13,7 @@ from retrieval.vector_retriever import VectorRetriever
 from retrieval.hybrid_retriever import HybridRetriever
 from rag.prompt_builder import PromptBuilder
 from utils.timer import Timer
+from vllm import LLM, SamplingParams
 from utils.patch_cleaner import extract_diff
 
 
@@ -20,25 +21,28 @@ class RAGPipeline:
     """End-to-end RAG pipeline with vLLM backend."""
 
     def __init__(self,
+                 vllm: LLM = None, 
                  retriever_type: str = 'hybrid',
                  embeddings_dir: str = 'data/processed/embeddings',
                  chunks_file: str = 'data/processed/chunks.json',
-                 vllm_url: str = 'http://localhost:8000',
                  top_k: int = 5,
                  alpha: float = 0.5):
         """
         Initialize RAG pipeline.
 
         Args:
+            vllm: Pre-initialized vLLM instance
             retriever_type: 'vector' or 'hybrid'
             embeddings_dir: Directory with embeddings
             chunks_file: Path to chunks JSON
-            vllm_url: vLLM server URL
             top_k: Number of documents to retrieve
             alpha: Hybrid retrieval weight (BM25 vs vector)
         """
         self.retriever_type = retriever_type
-        self.vllm_url = vllm_url.rstrip('/')
+        if vllm is None:
+            self.vllm = LLM(model="meta-llama/Meta-Llama-3-8B")
+        else:
+            self.vllm = vllm
         self.top_k = top_k
 
         # Initialize retriever
@@ -212,52 +216,29 @@ class RAGPipeline:
             temperature: Sampling temperature
 
         Returns:
-            LLM response dictionary
+            LLM response
         """
         # TODO: Update endpoint based on actual vLLM API
         # This is a generic implementation that may need adjustment
 
-        endpoint = f"{self.vllm_url}/v1/completions"
+        sampling_params = SamplingParams(max_tokens=max_tokens, temperature=temperature, top_p=0.9)
+        responses = self.vllm.generate(prompt, sampling_params=sampling_params)
 
-        payload = {
-            "prompt": prompt,
-            "max_tokens": max_tokens,
-            "temperature": temperature,
-            "top_p": 0.9,
-            "stream": False
+        arrival_time = responses[0].metrics.arrival_time
+        first_token_time = responses[0].metrics.first_token_time
+        finished_time = responses[0].metrics.finished_time
+        e2e = finished_time - arrival_time
+        ttft = first_token_time - arrival_time
+
+        print(f"arrival_time: {arrival_time} \n first_token_time: {first_token_time} \n finished_time: {finished_time}")
+
+        return {
+            'text': responses[0].outputs[0].text,
+            'tokens_generated': len(responses[0].outputs[0].token_ids),
+            'ttft_ms': ttft,
+            'e2e_ms': e2e
+            # 'raw_response': [response for response in responses] # could not include raw_resoponse as outout type (RequestOutput) is not JSON serializable
         }
-
-        try:
-            response = requests.post(
-                endpoint,
-                json=payload,
-                headers={"Content-Type": "application/json"},
-                timeout=120 # Increased timeout for code gen
-            )
-
-            response.raise_for_status()
-            result = response.json()
-
-            # Extract text from response
-            # Format may vary based on vLLM version
-            if 'choices' in result and len(result['choices']) > 0:
-                text = result['choices'][0].get('text', '')
-            else:
-                text = result.get('text', '')
-
-            return {
-                'text': text.strip(),
-                'tokens_generated': result.get('usage', {}).get('completion_tokens', 0),
-                'raw_response': result
-            }
-
-        except requests.exceptions.RequestException as e:
-            # Return error information if vLLM is not available
-            return {
-                'text': f'[vLLM Error: {str(e)}]',
-                'tokens_generated': 0,
-                'error': str(e)
-            }
 
     def batch_query(self,
                    queries: list,
