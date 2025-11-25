@@ -1,0 +1,3 @@
+- Implement a token counter/limit for the retrieval step, to create a condition comparable to the original SWE-bench RAG experiment, that used 13k/27k/50k tokens for the retrieval step.
+- Check token limits (input and output) for the VLM generation step. 
+- Check any places where token limits are hard coded and consider how it influences.
