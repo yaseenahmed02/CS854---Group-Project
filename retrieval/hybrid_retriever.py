@@ -45,7 +45,7 @@ class HybridRetriever:
         self.alpha = alpha
 
         # Load embedding generator for query encoding
-        self.embedding_generator = EmbeddingGenerator(text_model=model_name)
+        self.embedding_generator = EmbeddingGenerator(model_name=model_name, model_type='dense')
 
         # Load embeddings and metadata
         self.embeddings, self.metadata = self._load_embeddings()
@@ -207,7 +207,7 @@ class HybridRetriever:
             'total_embeddings': len(self.embeddings),
             'embedding_dimension': self.embeddings.shape[1],
             'total_chunks': len(self.chunks),
-            'model': self.embedding_generator.text_model_name,
+            'model': self.embedding_generator.model_name,
             'alpha': self.alpha,
             'retrieval_method': 'hybrid (BM25 + Vector)'
         }

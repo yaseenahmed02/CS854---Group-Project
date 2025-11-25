@@ -237,3 +237,77 @@ class FileLoader:
                 stats['total_text_length'] += len(doc['text'])
 
         return stats
+    def load_repo(self, repo_path: str) -> List[Dict[str, Any]]:
+        """
+        Recursively load all supported files from a repository.
+        
+        Args:
+            repo_path: Path to the repository root
+            
+        Returns:
+            List of document dictionaries
+        """
+        repo_path = Path(repo_path)
+        documents = []
+        
+        # Extensions to look for
+        code_exts = {'.py', '.js', '.ts', '.tsx', '.jsx', '.java', '.cpp', '.c', '.h', '.go', '.rs', '.php', '.rb'}
+        text_exts = {'.md', '.txt', '.rst'}
+        
+        # Directories to ignore
+        ignore_dirs = {'.git', '__pycache__', 'node_modules', 'venv', '.idea', '.vscode', 'dist', 'build'}
+        
+        print(f"Scanning repository at {repo_path}...")
+        
+        for root, dirs, files in os.walk(repo_path):
+            # Modify dirs in-place to skip ignored directories
+            dirs[:] = [d for d in dirs if d not in ignore_dirs]
+            
+            for file in files:
+                file_path = Path(root) / file
+                suffix = file_path.suffix.lower()
+                
+                try:
+                    if suffix in code_exts:
+                        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                            content = f.read()
+                            
+                        doc = {
+                            'id': f"code_{file_path.stem}_{hash(str(file_path))}",
+                            'text': content,
+                            'path': str(file_path),
+                            'type': 'code',
+                            'modality': 'text',
+                            'metadata': {
+                                'filename': file_path.name,
+                                'language': suffix[1:], # remove dot
+                                'size': len(content),
+                                'rel_path': str(file_path.relative_to(repo_path))
+                            }
+                        }
+                        documents.append(doc)
+                        
+                    elif suffix in text_exts:
+                        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                            content = f.read()
+                            
+                        doc = {
+                            'id': f"text_{file_path.stem}_{hash(str(file_path))}",
+                            'text': content,
+                            'path': str(file_path),
+                            'type': 'text',
+                            'modality': 'text',
+                            'metadata': {
+                                'filename': file_path.name,
+                                'format': suffix[1:],
+                                'size': len(content),
+                                'rel_path': str(file_path.relative_to(repo_path))
+                            }
+                        }
+                        documents.append(doc)
+                        
+                except Exception as e:
+                    print(f"Error loading {file_path}: {e}")
+                    
+        print(f"Found {len(documents)} documents in {repo_path}")
+        return documents

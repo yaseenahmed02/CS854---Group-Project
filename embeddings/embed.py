@@ -1,6 +1,6 @@
 """
 Embeddings Module
-Generates embeddings for text, code, and images using SentenceTransformers and CLIP.
+Generates embeddings for text, code, and images using SentenceTransformers and other models.
 """
 
 import sys
@@ -12,34 +12,52 @@ sys.path.insert(0, str(project_root))
 
 import numpy as np
 import json
-from typing import List, Dict, Any, Optional
+import torch
+from typing import List, Dict, Any, Optional, Union
 from sentence_transformers import SentenceTransformer
+from transformers import AutoModelForMaskedLM, AutoTokenizer
 from utils.timer import Timer, measure_time
-
 
 class EmbeddingGenerator:
     """Generate embeddings for multimodal documents."""
 
     def __init__(self,
-                 text_model: str = 'all-MiniLM-L6-v2',
+                 model_type: str = 'dense',
+                 model_name: str = 'jinaai/jina-embeddings-v2-base-code',
                  device: str = 'cpu'):
         """
         Initialize embedding generator.
 
         Args:
-            text_model: SentenceTransformer model name for text/code
+            model_type: 'dense', 'sparse_splade', or 'sparse_bgem3'
+            model_name: HuggingFace model name
             device: Device to run models on ('cpu' or 'cuda')
         """
         self.device = device
-        self.text_model_name = text_model
+        self.model_type = model_type
+        self.model_name = model_name
 
-        print(f"Loading text embedding model: {text_model}")
-        self.text_model = SentenceTransformer(text_model, device=device)
-
-        # TODO: Load CLIP model for image embeddings when needed
-        # from transformers import CLIPProcessor, CLIPModel
-        # self.clip_model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32")
-        # self.clip_processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
+        print(f"Loading {model_type} embedding model: {model_name}")
+        
+        if model_type == 'dense':
+            self.model = SentenceTransformer(model_name, trust_remote_code=True, device=device)
+            self.model.max_seq_length = 8192
+            
+        elif model_type == 'sparse_splade':
+            self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+            self.model = AutoModelForMaskedLM.from_pretrained(model_name)
+            self.model.to(device)
+            
+        elif model_type == 'sparse_bgem3':
+            try:
+                from FlagEmbedding import BGEM3FlagModel
+                self.model = BGEM3FlagModel(model_name, use_fp16=False, device=device)
+            except ImportError:
+                print("FlagEmbedding not found. Please install it to use BGE-M3 sparse.")
+                raise
+            
+        else:
+            raise ValueError(f"Unknown model type: {model_type}")
 
     def embed_chunks(self, chunks: List[Dict[str, Any]]) -> tuple:
         """
@@ -49,23 +67,27 @@ class EmbeddingGenerator:
             chunks: List of chunk dictionaries
 
         Returns:
-            Tuple of (embeddings_array, metadata_list)
+            Tuple of (embeddings, metadata_list)
+            embeddings can be np.ndarray (dense) or List[Dict] (sparse)
         """
         print(f"Generating embeddings for {len(chunks)} chunks...")
 
         with measure_time("Embedding generation") as timing:
-            # Extract text from chunks
             texts = [chunk['text'] for chunk in chunks]
-
-            # Generate embeddings
-            embeddings = self.text_model.encode(
-                texts,
-                show_progress_bar=True,
-                convert_to_numpy=True,
-                normalize_embeddings=True  # Important for cosine similarity
-            )
-
-            # Create metadata for each embedding
+            
+            if self.model_type == 'dense':
+                embeddings = self.model.encode(
+                    texts,
+                    show_progress_bar=True,
+                    convert_to_numpy=True,
+                    normalize_embeddings=True
+                )
+            elif self.model_type == 'sparse_splade':
+                embeddings = self._generate_splade(texts)
+            elif self.model_type == 'sparse_bgem3':
+                embeddings = self._generate_bgem3_sparse(texts)
+            
+            # Create metadata
             metadata = []
             for i, chunk in enumerate(chunks):
                 meta = {
@@ -73,174 +95,121 @@ class EmbeddingGenerator:
                     'document_id': chunk['document_id'],
                     'document_type': chunk['document_type'],
                     'chunk_index': chunk['chunk_index'],
-                    'embedding_dim': embeddings.shape[1]
+                    'model_type': self.model_type
                 }
                 metadata.append(meta)
 
-        print(f"Generated {len(embeddings)} embeddings "
-              f"(dim={embeddings.shape[1]}) "
-              f"in {timing['elapsed_ms']:.2f}ms")
-
+        print(f"Generated {len(embeddings)} embeddings in {timing['elapsed_ms']:.2f}ms")
         return embeddings, metadata
 
-    def embed_query(self, query: str) -> np.ndarray:
-        """
-        Generate embedding for a query.
+    def embed_query(self, query: str) -> Union[np.ndarray, Dict[str, float]]:
+        """Generate embedding for a query."""
+        if self.model_type == 'dense':
+            return self.model.encode(query, convert_to_numpy=True, normalize_embeddings=True)
+        elif self.model_type == 'sparse_splade':
+            return self._generate_splade([query])[0]
+        elif self.model_type == 'sparse_bgem3':
+            return self._generate_bgem3_sparse([query])[0]
 
-        Args:
-            query: Query string
+    def _generate_splade(self, texts: List[str]) -> List[Dict[str, float]]:
+        """Generate SPLADE sparse embeddings."""
+        # Simplified SPLADE implementation
+        inputs = self.tokenizer(texts, return_tensors="pt", padding=True, truncation=True, max_length=512).to(self.device)
+        with torch.no_grad():
+            logits = self.model(**inputs).logits
+        
+        # SPLADE logic: max(log(1 + relu(logits))) * attention_mask
+        inter = torch.log1p(torch.relu(logits))
+        token_max = torch.max(inter * inputs["attention_mask"].unsqueeze(-1), dim=1).values
+        
+        results = []
+        for i in range(token_max.shape[0]):
+            # Get non-zero weights
+            indices = token_max[i].nonzero().flatten()
+            weights = token_max[i][indices]
+            
+            # Convert to token: weight dict
+            sparse_vec = {}
+            for idx, weight in zip(indices, weights):
+                token = self.tokenizer.decode([idx])
+                sparse_vec[token] = float(weight)
+            results.append(sparse_vec)
+            
+        return results
 
-        Returns:
-            Query embedding vector
-        """
-        embedding = self.text_model.encode(
-            query,
-            convert_to_numpy=True,
-            normalize_embeddings=True
-        )
-        return embedding
+    def _generate_bgem3_sparse(self, texts: List[str]) -> List[Dict[str, float]]:
+        """Generate BGE-M3 lexical weights (sparse)."""
+        # Using FlagEmbedding
+        output = self.model.encode(texts, return_dense=False, return_sparse=True, return_colbert_vecs=False)
+        
+        # output['lexical_weights'] is a list of dicts (token -> weight)
+        if isinstance(output, dict) and 'lexical_weights' in output:
+             return output['lexical_weights']
+        
+        # Fallback if structure is different (older versions?)
+        return output
 
-    def save_embeddings(self,
-                        embeddings: np.ndarray,
-                        metadata: List[Dict[str, Any]],
-                        output_dir: str):
-        """
-        Save embeddings and metadata to disk.
-
-        Args:
-            embeddings: Numpy array of embeddings
-            metadata: List of metadata dictionaries
-            output_dir: Directory to save files
-        """
+    def save_embeddings(self, embeddings: Any, metadata: List[Dict[str, Any]], output_dir: str):
+        """Save embeddings to disk."""
         output_path = Path(output_dir)
         output_path.mkdir(parents=True, exist_ok=True)
 
-        # Save embeddings as numpy array
-        embeddings_file = output_path / "text_embeddings.npy"
-        np.save(embeddings_file, embeddings)
-        print(f"Saved embeddings to {embeddings_file}")
+        if self.model_type == 'dense':
+            np.save(output_path / "embeddings.npy", embeddings)
+        else:
+            # Save sparse as JSON or Pickle
+            import pickle
+            with open(output_path / "embeddings.pkl", 'wb') as f:
+                pickle.dump(embeddings, f)
 
-        # Save metadata as JSON
-        metadata_file = output_path / "metadata.json"
-        with open(metadata_file, 'w', encoding='utf-8') as f:
+        with open(output_path / "metadata.json", 'w') as f:
             json.dump(metadata, f, indent=2)
-        print(f"Saved metadata to {metadata_file}")
-
-        # Save embedding info
-        info = {
-            'model': self.text_model_name,
-            'num_embeddings': len(embeddings),
-            'embedding_dim': embeddings.shape[1],
-            'normalized': True
-        }
-        info_file = output_path / "embedding_info.json"
-        with open(info_file, 'w', encoding='utf-8') as f:
-            json.dump(info, f, indent=2)
-        print(f"Saved embedding info to {info_file}")
 
     def load_embeddings(self, input_dir: str) -> tuple:
         """
         Load embeddings and metadata from disk.
-
+        
         Args:
-            input_dir: Directory containing embedding files
-
+            input_dir: Directory containing embeddings and metadata
+            
         Returns:
-            Tuple of (embeddings_array, metadata_list)
+            Tuple of (embeddings, metadata_list)
         """
         input_path = Path(input_dir)
-
-        # Load embeddings
-        embeddings_file = input_path / "text_embeddings.npy"
-        embeddings = np.load(embeddings_file)
-        print(f"Loaded embeddings from {embeddings_file} (shape={embeddings.shape})")
-
+        
         # Load metadata
-        metadata_file = input_path / "metadata.json"
-        with open(metadata_file, 'r', encoding='utf-8') as f:
+        with open(input_path / "metadata.json", 'r') as f:
             metadata = json.load(f)
-        print(f"Loaded {len(metadata)} metadata entries")
-
+            
+        # Load embeddings
+        if (input_path / "embeddings.npy").exists():
+            embeddings = np.load(input_path / "embeddings.npy")
+        elif (input_path / "embeddings.pkl").exists():
+            import pickle
+            with open(input_path / "embeddings.pkl", 'rb') as f:
+                embeddings = pickle.load(f)
+        else:
+            raise FileNotFoundError(f"No embeddings found in {input_dir}")
+            
         return embeddings, metadata
 
-    def compute_similarity(self,
-                          query_embedding: np.ndarray,
-                          doc_embeddings: np.ndarray) -> np.ndarray:
-        """
-        Compute cosine similarity between query and documents.
-
-        Args:
-            query_embedding: Query embedding vector (1D)
-            doc_embeddings: Document embeddings matrix (2D)
-
-        Returns:
-            Similarity scores array
-        """
-        # Embeddings are already normalized, so dot product = cosine similarity
-        if query_embedding.ndim == 1:
-            similarities = np.dot(doc_embeddings, query_embedding)
-        else:
-            similarities = np.dot(doc_embeddings, query_embedding.T).flatten()
-
-        return similarities
-
-    def get_top_k(self,
-                  similarities: np.ndarray,
-                  k: int = 5) -> tuple:
-        """
-        Get top-k indices and scores.
-
-        Args:
-            similarities: Similarity scores array
-            k: Number of top results to return
-
-        Returns:
-            Tuple of (top_indices, top_scores)
-        """
-        # Get top-k indices (highest scores first)
-        top_indices = np.argsort(similarities)[::-1][:k]
-        top_scores = similarities[top_indices]
-
-        return top_indices, top_scores
-
-
-def embed_corpus(chunks_file: str, output_dir: str, model_name: str = 'all-MiniLM-L6-v2'):
-    """
-    Standalone function to embed corpus chunks.
-
-    Args:
-        chunks_file: Path to chunks JSON file
-        output_dir: Output directory for embeddings
-        model_name: SentenceTransformer model name
-    """
-    # Load chunks
-    print(f"Loading chunks from {chunks_file}")
-    with open(chunks_file, 'r', encoding='utf-8') as f:
+def embed_corpus(chunks_file: str, output_dir: str, model_type: str, model_name: str):
+    """Standalone function to embed corpus."""
+    with open(chunks_file, 'r') as f:
         chunks = json.load(f)
 
-    # Generate embeddings
-    generator = EmbeddingGenerator(text_model=model_name)
+    generator = EmbeddingGenerator(model_type=model_type, model_name=model_name)
     embeddings, metadata = generator.embed_chunks(chunks)
-
-    # Save embeddings
     generator.save_embeddings(embeddings, metadata, output_dir)
 
-    print(f"\n✓ Embedding generation complete!")
-    print(f"  Total chunks: {len(chunks)}")
-    print(f"  Embedding dimension: {embeddings.shape[1]}")
-    print(f"  Output directory: {output_dir}")
-
-
 if __name__ == '__main__':
-    import sys
-
-    if len(sys.argv) < 3:
-        print("Usage: python embed.py <chunks_file> <output_dir> [model_name]")
-        print("Example: python embed.py data/processed/chunks.json data/processed/embeddings")
+    if len(sys.argv) < 4:
+        print("Usage: python embed.py <chunks_file> <output_dir> <model_type> [model_name]")
         sys.exit(1)
 
     chunks_file = sys.argv[1]
     output_dir = sys.argv[2]
-    model_name = sys.argv[3] if len(sys.argv) > 3 else 'all-MiniLM-L6-v2'
+    model_type = sys.argv[3]
+    model_name = sys.argv[4] if len(sys.argv) > 4 else 'jinaai/jina-embeddings-v2-base-code'
 
-    embed_corpus(chunks_file, output_dir, model_name)
+    embed_corpus(chunks_file, output_dir, model_type, model_name)

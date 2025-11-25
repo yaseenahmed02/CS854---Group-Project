@@ -1,0 +1,317 @@
+import sys
+import os
+import json
+from pathlib import Path
+from typing import List, Dict, Any, Optional, Union
+from collections import defaultdict
+
+# Add project root to path
+sys.path.insert(0, os.getcwd())
+
+from qdrant_client import QdrantClient
+from qdrant_client.http import models
+import numpy as np
+from rank_bm25 import BM25Okapi
+
+from embeddings.embed import EmbeddingGenerator
+from utils.timer import measure_time
+
+class FlexibleRetriever:
+    """
+    Retriever that supports dynamic strategies (Dense, Sparse, Hybrid)
+    and Multimodal fusion.
+    """
+    
+    def __init__(self, 
+                 client: QdrantClient, 
+                 collection_name: str, 
+                 swe_images_collection: str = "swe_images",
+                 chunks_file: Optional[str] = None,
+                 images_client: Optional[QdrantClient] = None):
+        """
+        Initialize FlexibleRetriever.
+        
+        Args:
+            client: QdrantClient instance (for code)
+            collection_name: Name of the code collection
+            swe_images_collection: Name of the images collection
+            chunks_file: Path to chunks.json (required for BM25 strategy)
+            images_client: QdrantClient instance for images (if different DB)
+        """
+        self.client = client
+        self.images_client = images_client if images_client else client
+        self.collection_name = collection_name
+        self.swe_images_collection = swe_images_collection
+        self.chunks_file = chunks_file
+        
+        # Lazy loaded components
+        self.models = {}
+        self.bm25 = None
+        self.chunks = None
+        
+    def _get_model(self, model_type: str) -> EmbeddingGenerator:
+        """Lazy load embedding models."""
+        if model_type not in self.models:
+            if model_type == 'jina':
+                self.models[model_type] = EmbeddingGenerator(model_type='dense', model_name='jinaai/jina-embeddings-v2-base-code')
+            elif model_type == 'splade':
+                self.models[model_type] = EmbeddingGenerator(model_type='sparse_splade', model_name='prithivida/Splade_PP_en_v1')
+            elif model_type == 'bge':
+                self.models[model_type] = EmbeddingGenerator(model_type='sparse_bgem3', model_name='BAAI/bge-m3')
+            else:
+                raise ValueError(f"Unknown model type: {model_type}")
+        return self.models[model_type]
+
+    def _get_bm25(self):
+        """Lazy load BM25 index."""
+        if self.bm25 is None:
+            if self.chunks_file and os.path.exists(self.chunks_file):
+                print("Loading chunks for BM25 from file...")
+                with open(self.chunks_file, 'r') as f:
+                    self.chunks = json.load(f)
+            else:
+                print("Fetching all documents from Qdrant for BM25...")
+                # Scroll all points
+                self.chunks = []
+                next_offset = None
+                while True:
+                    points, next_offset = self.client.scroll(
+                        collection_name=self.collection_name,
+                        limit=100,
+                        offset=next_offset,
+                        with_payload=True,
+                        with_vectors=False
+                    )
+                    for point in points:
+                        # Convert payload to chunk format
+                        chunk = point.payload
+                        chunk['chunk_id'] = point.id
+                        self.chunks.append(chunk)
+                    
+                    if next_offset is None:
+                        break
+            
+            if not self.chunks:
+                raise ValueError("No documents found for BM25 index")
+
+            print(f"Building BM25 index with {len(self.chunks)} documents...")
+            tokenized_corpus = [self._tokenize(chunk.get('text', '')) for chunk in self.chunks]
+            self.bm25 = BM25Okapi(tokenized_corpus)
+            
+        return self.bm25
+
+    def _tokenize(self, text: str) -> List[str]:
+        """Simple tokenization for BM25."""
+        return [t for t in text.lower().split() if t.isalnum()]
+
+    def _fetch_visual_description(self, instance_id: str) -> Optional[str]:
+        """Fetch VLM description from Qdrant."""
+        try:
+            # Search by instance_id in payload
+            # Qdrant scroll/search
+            res = self.images_client.scroll(
+                collection_name=self.swe_images_collection,
+                scroll_filter=models.Filter(
+                    must=[
+                        models.FieldCondition(
+                            key="instance_id",
+                            match=models.MatchValue(value=instance_id)
+                        )
+                    ]
+                ),
+                limit=1
+            )
+            points, _ = res
+            if points:
+                return points[0].payload.get("vlm_description")
+        except Exception as e:
+            print(f"Error fetching visual description: {e}")
+        return None
+
+    def retrieve(self, 
+                 query: str, 
+                 instance_id: Optional[str] = None, 
+                 strategy: List[str] = ["jina"], 
+                 visual_mode: str = "none", 
+                 top_k: int = 10) -> Dict[str, Any]:
+        """
+        Execute retrieval based on strategy.
+        
+        Args:
+            query: Text query
+            instance_id: SWE-bench instance ID (for VLM)
+            strategy: List of retrievers to use (['jina', 'splade', 'bge', 'bm25'])
+            visual_mode: 'none', 'augment' (append to query), 'fusion' (separate query)
+            top_k: Number of results to return
+            
+        Returns:
+            Dict with 'results' and metadata
+        """
+        # 1. Handle Visual Mode
+        vlm_desc = ""
+        if visual_mode in ["augment", "fusion", "visual_only"] and instance_id:
+            vlm_desc = self._fetch_visual_description(instance_id)
+            if vlm_desc and visual_mode == "augment":
+                query = f"{query} {vlm_desc}"
+                print(f"Augmented query with VLM description ({len(vlm_desc)} chars)")
+
+        # 2. Execute Strategies
+        all_results = []
+        
+        # If visual_mode is fusion, we treat the visual query as a separate "strategy" execution effectively
+        # But usually fusion means: Query(Text) + Query(Visual) -> Fuse
+        # Here we have multiple strategies (Jina, Splade) AND potential visual fusion.
+        # Let's simplify: If fusion, we run the strategies for Text Query AND Visual Query, then fuse all.
+        
+        queries_to_run = [query]
+        if visual_mode == "fusion" and vlm_desc:
+            queries_to_run.append(vlm_desc)
+            print("Running separate visual query for fusion")
+        elif visual_mode == "visual_only" and vlm_desc:
+            queries_to_run = [vlm_desc]
+            print("Running visual-only query")
+        elif visual_mode == "visual_only" and not vlm_desc:
+            print("Warning: visual_only mode requested but no VLM description found. Returning empty results.")
+            queries_to_run = []
+
+        for q in queries_to_run:
+            for strat in strategy:
+                print(f"Running strategy: {strat} for query: {q[:50]}...")
+                
+                if strat == "bm25":
+                    bm25 = self._get_bm25()
+                    tokenized_query = self._tokenize(q)
+                    scores = bm25.get_scores(tokenized_query)
+                    top_n = np.argsort(scores)[::-1][:top_k*2] # Get more for fusion
+                    
+                    strat_results = []
+                    for idx in top_n:
+                        strat_results.append({
+                            "id": self.chunks[idx]['chunk_id'], # Assuming chunk_id exists
+                            "score": float(scores[idx]),
+                            "content": self.chunks[idx],
+                            "source": "bm25"
+                        })
+                    all_results.append(strat_results)
+                    
+                elif strat in ["jina", "splade", "bge"]:
+                    # Qdrant Retrieval
+                    model = self._get_model(strat)
+                    emb = model.embed_query(q)
+                    
+                    search_params = None
+                    query_vector = None
+                    vector_name = None
+                    
+                    if strat == "jina":
+                        vector_name = "dense"
+                        query_vector = emb.tolist()
+                    elif strat in ["splade", "bge"]:
+                        vector_name = strat
+                        # Convert sparse dict to models.SparseVector
+                        indices = []
+                        values = []
+                        
+                        # Helper to deduplicate (same as ingestion)
+                        # We need to ensure we use the same tokenizer/logic as ingestion
+                        # embed.py returns {token: weight}
+                        # We need to convert tokens to IDs if we used IDs in ingestion
+                        # In ingestion, we used model.tokenizer.convert_tokens_to_ids
+                        
+                        if strat == "splade":
+                            tokenizer = model.tokenizer
+                        else: # bge
+                            tokenizer = model.model.tokenizer
+                            
+                        for token, weight in emb.items():
+                            try:
+                                idx = tokenizer.convert_tokens_to_ids(token)
+                                indices.append(idx)
+                                values.append(weight)
+                            except:
+                                pass
+                                
+                        # Deduplicate
+                        idx_to_val = {}
+                        for idx, val in zip(indices, values):
+                            idx_to_val[idx] = max(idx_to_val.get(idx, 0), val)
+                        
+                        query_vector = models.SparseVector(
+                            indices=list(idx_to_val.keys()),
+                            values=list(idx_to_val.values())
+                        )
+                    
+                    # Search using query_points
+                    search_result = self.client.query_points(
+                        collection_name=self.collection_name,
+                        query=query_vector,
+                        using=vector_name,
+                        limit=top_k*2
+                    ).points
+                    
+                    strat_results = []
+                    for hit in search_result:
+                        strat_results.append({
+                            "id": hit.id, # Point ID
+                            "score": hit.score,
+                            "content": hit.payload,
+                            "source": strat
+                        })
+                    all_results.append(strat_results)
+
+        # 3. Fuse Results
+        fused_results = self._fuse_rankings(all_results, k=60)
+        
+        return {
+            "query": query,
+            "results": fused_results[:top_k],
+            "retrieved_documents": fused_results[:top_k],
+            "strategies": strategy,
+            "visual_mode": visual_mode
+        }
+
+    def _fuse_rankings(self, results_list: List[List[Dict]], k: int = 60) -> List[Dict]:
+        """
+        Reciprocal Rank Fusion.
+        score = sum(1 / (k + rank))
+        """
+        fused_scores = defaultdict(float)
+        doc_map = {}
+        
+        for results in results_list:
+            for rank, item in enumerate(results):
+                doc_id = item['id'] # Use unique ID
+                # If using Qdrant, ID is UUID. If BM25, ID is chunk_id.
+                # We need to ensure they match if they refer to same content.
+                # In ingestion, we generated UUIDs for Qdrant points.
+                # BM25 chunks might have different IDs if not synchronized.
+                # However, for this exercise, we assume Qdrant is the primary source or we just fuse based on what we have.
+                # If mixing BM25 (from file) and Qdrant (from DB), IDs might mismatch unless we used chunk_id as Point ID.
+                # In ingest_code_to_qdrant.py, we used uuid.uuid4().
+                # This is a potential issue for Hybrid BM25 + Qdrant if they don't share IDs.
+                # But for Qdrant-based strategies (Jina + Splade), they share Point IDs (same point has multiple vectors? No, we upserted points with all vectors).
+                # Wait, in ingestion we created ONE point with "dense", "splade", "bge" vectors.
+                # So Jina/Splade/BGE will return the SAME Point ID for the same chunk.
+                # BM25 from file will have "chunk_id".
+                # If we want to fuse BM25, we need to map BM25 ID to Qdrant ID or vice versa.
+                # Since we can't easily do that without a mapping, we might just rely on payload content or accept they are different "docs" in this context
+                # OR, we rely on the fact that we are mostly testing Qdrant strategies.
+                # If BM25 is used, it might be isolated.
+                # Let's proceed with ID fusion.
+                
+                fused_scores[doc_id] += 1 / (k + rank + 1)
+                if doc_id not in doc_map:
+                    doc_map[doc_id] = item['content']
+
+        # Sort by fused score
+        sorted_ids = sorted(fused_scores.keys(), key=lambda x: fused_scores[x], reverse=True)
+        
+        final_results = []
+        for doc_id in sorted_ids:
+            final_results.append({
+                "id": doc_id,
+                "score": fused_scores[doc_id],
+                "payload": doc_map[doc_id]
+            })
+            
+        return final_results
