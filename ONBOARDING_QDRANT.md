@@ -144,6 +144,14 @@ python -m swebench.harness.run_evaluation \
     --split test
 ```
 
+### 3. Measure Recall
+To rigorously evaluate the retrieval performance (checking if the retrieved files match the actual modified files in the solution), run the recall analysis script.
+
+```bash
+python benchmark/measure_recall.py
+```
+This will output a summary table and save detailed statistics to `results/recall_analysis.csv`.
+
 ---
 
 ## Project Structure

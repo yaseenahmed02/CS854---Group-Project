@@ -102,7 +102,9 @@ class FlexibleRetriever:
 
     def _tokenize(self, text: str) -> List[str]:
         """Simple tokenization for BM25."""
-        return [t for t in text.lower().split() if t.isalnum()]
+        # Replace non-alphanumeric with space
+        clean_text = "".join([c if c.isalnum() else " " for c in text.lower()])
+        return [t for t in clean_text.split() if t]
 
     def _fetch_visual_description(self, instance_id: str) -> Optional[str]:
         """Fetch VLM description from Qdrant."""

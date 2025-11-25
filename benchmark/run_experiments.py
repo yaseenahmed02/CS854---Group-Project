@@ -158,7 +158,8 @@ def run_experiments(limit: int = None, mock_vllm: bool = False, split: str = "te
                         "instance_id": instance_id,
                         "model_patch": result['answer'],
                         "model_name_or_path": exp_id,
-                        "metrics": result['metrics'] # Store full metrics including time and token counts
+                        "metrics": result['metrics'], # Store full metrics including time and token counts
+                        "retrieved_documents": result['retrieved_documents'] # Persist retrieved docs for recall analysis
                     }
                     predictions.append(prediction)
                     count += 1

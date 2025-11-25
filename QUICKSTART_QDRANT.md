@@ -56,3 +56,11 @@ python -m swebench.harness.run_evaluation \
     --predictions_path results/ \
     --dataset_name princeton-nlp/SWE-bench_Multimodal
 ```
+
+## 6. Measure Recall
+
+Calculate retrieval recall against the ground truth.
+
+```bash
+python benchmark/measure_recall.py
+```
