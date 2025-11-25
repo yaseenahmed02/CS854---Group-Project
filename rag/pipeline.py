@@ -1,8 +1,3 @@
-"""
-RAG Pipeline
-End-to-end retrieval-augmented generation pipeline with vLLM integration.
-"""
-
 import sys
 from pathlib import Path
 
@@ -12,12 +7,15 @@ sys.path.insert(0, str(project_root))
 
 import requests
 import json
+import difflib
 from typing import Dict, Any, Optional
 from retrieval.vector_retriever import VectorRetriever
 from retrieval.hybrid_retriever import HybridRetriever
 from rag.prompt_builder import PromptBuilder
 from utils.timer import Timer
 from vllm import LLM, SamplingParams
+from utils.patch_cleaner import extract_diff
+
 
 class RAGPipeline:
     """End-to-end RAG pipeline with vLLM backend."""
@@ -70,7 +68,8 @@ class RAGPipeline:
     def query(self,
              query: str,
              max_tokens: int = 256,
-             temperature: float = 0.7) -> Dict[str, Any]:
+             temperature: float = 0.7,
+             mode: str = "qa") -> Dict[str, Any]:
         """
         Execute full RAG pipeline: retrieve + generate.
 
@@ -78,6 +77,7 @@ class RAGPipeline:
             query: User query
             max_tokens: Max tokens to generate
             temperature: LLM temperature
+            mode: 'qa' or 'code_gen'
 
         Returns:
             Dictionary with results and metrics
@@ -92,9 +92,56 @@ class RAGPipeline:
         retrieval_time_ms = retrieval_timer.stop()
 
         # 2. Prompt building
-        prompt_result = self.prompt_builder.build_prompt(query, retrieved_docs)
-        prompt = prompt_result['prompt']
-        prompt_tokens = prompt_result['estimated_tokens']
+        if mode == "code_gen":
+            # For code gen, we need a specific prompt
+            # And we assume the retrieved docs contain the file to be patched
+            # Let's find the most relevant file from docs
+            target_file_content = ""
+            target_file_path = ""
+            
+            if retrieved_docs:
+                # Naively take the top document as the target file
+                # In a real scenario, we might want to let the LLM decide or pass it explicitly
+                top_doc = retrieved_docs[0]
+                # If we have the full file content in 'text' or can load it
+                # The retrieved doc 'text' might be a chunk.
+                # If we want to rewrite the ENTIRE file, we need the full content.
+                # Let's check if 'path' is in metadata and load it if possible.
+                # If not, we rely on the chunk (which might be partial).
+                # For this exercise, let's assume we try to load from disk if path exists.
+                
+                doc_path = top_doc.get('path') or top_doc.get('metadata', {}).get('path')
+                if doc_path and Path(doc_path).exists():
+                    try:
+                        with open(doc_path, 'r', encoding='utf-8') as f:
+                            target_file_content = f.read()
+                        target_file_path = doc_path
+                    except:
+                        target_file_content = top_doc.get('text', '')
+                else:
+                    target_file_content = top_doc.get('text', '')
+            
+            system_prompt = (
+                "You are a Senior Software Engineer. Your task is to fix the issue described in the query.\n"
+                "Rewrite the entire file to fix the issue. Output the full, valid file content enclosed in markdown code blocks.\n"
+                "Do not output diffs. Do not output explanations outside the code block unless necessary.\n"
+            )
+            
+            user_prompt = (
+                f"Issue: {query}\n\n"
+                f"Target File ({target_file_path}):\n"
+                f"```\n{target_file_content}\n```\n\n"
+                "Please provide the fixed file content."
+            )
+            
+            prompt = f"{system_prompt}\n\n{user_prompt}"
+            prompt_tokens = len(prompt) // 4 # Estimate
+            
+        else:
+            # Standard QA prompt
+            prompt_result = self.prompt_builder.build_prompt(query, retrieved_docs)
+            prompt = prompt_result['prompt']
+            prompt_tokens = prompt_result['estimated_tokens']
 
         # 3. LLM generation
         generation_timer = Timer()
@@ -102,16 +149,43 @@ class RAGPipeline:
 
         llm_response = self._call_vllm(
             prompt,
-            max_tokens=max_tokens,
+            max_tokens=max_tokens if mode == "qa" else 4096, # Allow more tokens for code gen
             temperature=temperature
         )
 
         generation_time_ms = generation_timer.stop()
+        
+        answer = llm_response.get('text', '')
+        
+        # 4. Post-processing for code_gen
+        final_answer = answer
+        if mode == "code_gen" and target_file_content:
+            # Extract code
+            generated_code = extract_diff(answer)
+            
+            # Calculate unified diff
+            original_lines = target_file_content.splitlines(keepends=True)
+            generated_lines = generated_code.splitlines(keepends=True)
+            
+            diff = difflib.unified_diff(
+                original_lines,
+                generated_lines,
+                fromfile=f"a/{Path(target_file_path).name}" if target_file_path else "a/original",
+                tofile=f"b/{Path(target_file_path).name}" if target_file_path else "b/modified",
+                lineterm=""
+            )
+            
+            diff_text = "".join(diff)
+            if diff_text:
+                final_answer = diff_text
+            else:
+                final_answer = "No changes detected or diff generation failed."
 
-        # 4. Compile results
+        # 5. Compile results
         result = {
             'query': query,
-            'answer': llm_response.get('text', ''),
+            'answer': final_answer,
+            'raw_llm_output': answer if mode == "code_gen" else None,
             'retrieved_documents': retrieved_docs,
             'num_retrieved': len(retrieved_docs),
             'metrics': {
@@ -123,7 +197,8 @@ class RAGPipeline:
                 'total_tokens': prompt_tokens + llm_response.get('tokens_generated', 0)
             },
             'retrieval_method': self.retriever_type,
-            'llm_response': llm_response
+            'llm_response': llm_response,
+            'mode': mode
         }
 
         return result
@@ -207,12 +282,13 @@ if __name__ == '__main__':
     import sys
 
     if len(sys.argv) < 2:
-        print("Usage: python pipeline.py <query> [retriever_type]")
-        print("Example: python pipeline.py 'How does caching work?' hybrid")
+        print("Usage: python pipeline.py <query> [retriever_type] [mode]")
+        print("Example: python pipeline.py 'Fix the bug' hybrid code_gen")
         sys.exit(1)
 
     query = sys.argv[1]
     retriever_type = sys.argv[2] if len(sys.argv) > 2 else 'hybrid'
+    mode = sys.argv[3] if len(sys.argv) > 3 else 'qa'
 
     # Initialize pipeline
     pipeline = RAGPipeline(
@@ -225,9 +301,10 @@ if __name__ == '__main__':
 
     # Execute query
     print(f"\nQuery: {query}")
-    print(f"Retrieval method: {retriever_type}\n")
+    print(f"Retrieval method: {retriever_type}")
+    print(f"Mode: {mode}\n")
 
-    result = pipeline.query(query)
+    result = pipeline.query(query, mode=mode)
 
     # Print results
     print("=== ANSWER ===")
@@ -240,6 +317,3 @@ if __name__ == '__main__':
     print(f"Prompt tokens: {metrics['prompt_tokens']}")
     print(f"Generated tokens: {metrics['generated_tokens']}")
     print(f"Total tokens: {metrics['total_tokens']}")
-    print(f"\n=== RETRIEVED DOCUMENTS ({result['num_retrieved']}) ===")
-    for doc in result['retrieved_documents'][:3]:
-        print(f"[{doc['rank']}] {doc['document_id']} (score: {doc['retrieval_score']:.4f})")
