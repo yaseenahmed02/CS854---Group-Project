@@ -108,7 +108,7 @@ results = retriever.retrieve(
     query="Fix the sidebar overflow issue",
     instance_id="grommet__grommet-123", # Needed to find associated images
     strategy=["jina", "bm25"],          # Hybrid Text Search
-    visual_mode="fusion"                # Fuse with Visual Search
+    visual_mode="fusion"                # Fuse with Visual Search (one query per image)
 )
 
 print(results['retrieved_documents'])

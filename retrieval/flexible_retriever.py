@@ -106,11 +106,11 @@ class FlexibleRetriever:
         clean_text = "".join([c if c.isalnum() else " " for c in text.lower()])
         return [t for t in clean_text.split() if t]
 
-    def _fetch_visual_description(self, instance_id: str) -> Optional[str]:
-        """Fetch VLM description from Qdrant."""
+    def _fetch_visual_descriptions(self, instance_id: str) -> List[str]:
+        """Fetch all VLM descriptions from Qdrant for an instance."""
+        descriptions = []
         try:
             # Search by instance_id in payload
-            # Qdrant scroll/search
             res = self.images_client.scroll(
                 collection_name=self.swe_images_collection,
                 scroll_filter=models.Filter(
@@ -121,14 +121,16 @@ class FlexibleRetriever:
                         )
                     ]
                 ),
-                limit=1
+                limit=10 # Fetch up to 10 images
             )
             points, _ = res
-            if points:
-                return points[0].payload.get("vlm_description")
+            for point in points:
+                desc = point.payload.get("vlm_description")
+                if desc:
+                    descriptions.append(desc)
         except Exception as e:
-            print(f"Error fetching visual description: {e}")
-        return None
+            print(f"Error fetching visual descriptions: {e}")
+        return descriptions
 
     def retrieve(self, 
                  query: str, 
@@ -150,12 +152,14 @@ class FlexibleRetriever:
             Dict with 'results' and metadata
         """
         # 1. Handle Visual Mode
-        vlm_desc = ""
+        vlm_descs = []
         if visual_mode in ["augment", "fusion", "visual_only"] and instance_id:
-            vlm_desc = self._fetch_visual_description(instance_id)
-            if vlm_desc and visual_mode == "augment":
-                query = f"{query} {vlm_desc}"
-                print(f"Augmented query with VLM description ({len(vlm_desc)} chars)")
+            vlm_descs = self._fetch_visual_descriptions(instance_id)
+            if vlm_descs and visual_mode == "augment":
+                # Join all descriptions
+                combined_desc = " ".join(vlm_descs)
+                query = f"{query} {combined_desc}"
+                print(f"Augmented query with {len(vlm_descs)} VLM descriptions")
 
         # 2. Execute Strategies
         all_results = []
@@ -166,13 +170,13 @@ class FlexibleRetriever:
         # Let's simplify: If fusion, we run the strategies for Text Query AND Visual Query, then fuse all.
         
         queries_to_run = [query]
-        if visual_mode == "fusion" and vlm_desc:
-            queries_to_run.append(vlm_desc)
-            print("Running separate visual query for fusion")
-        elif visual_mode == "visual_only" and vlm_desc:
-            queries_to_run = [vlm_desc]
-            print("Running visual-only query")
-        elif visual_mode == "visual_only" and not vlm_desc:
+        if visual_mode == "fusion" and vlm_descs:
+            queries_to_run.extend(vlm_descs)
+            print(f"Running separate visual queries for fusion ({len(vlm_descs)} images)")
+        elif visual_mode == "visual_only" and vlm_descs:
+            queries_to_run = vlm_descs
+            print(f"Running visual-only queries ({len(vlm_descs)} images)")
+        elif visual_mode == "visual_only" and not vlm_descs:
             print("Warning: visual_only mode requested but no VLM description found. Returning empty results.")
             queries_to_run = []
 

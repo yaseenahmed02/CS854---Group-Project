@@ -58,8 +58,8 @@ The `FlexibleRetriever` supports dynamic strategy selection at query time.
 
 **Multimodal Modes:**
 - `visual_mode='none'`: Text-only retrieval.
-- `visual_mode='augment'`: Appends VLM descriptions of relevant images to the text query.
-- `visual_mode='fusion'`: Performs separate code and visual queries, then fuses results.
+- `visual_mode='augment'`: Appends all VLM descriptions of relevant images to the text query.
+- `visual_mode='fusion'`: Performs separate code and visual queries (one per image), then fuses results.
 
 ### 3. Generation (RAG Pipeline)
 
