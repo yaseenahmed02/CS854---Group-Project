@@ -3,7 +3,7 @@ import os
 import json
 
 # Add project root to path
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
 from utils.ingestion_utils import SemanticChunker
 from embeddings.embed import EmbeddingGenerator
