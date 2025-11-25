@@ -55,7 +55,7 @@ def get_collection_name(repo: str, version: str) -> str:
     ver_san = sanitize_path_component(version)
     return f"{repo_san}_{ver_san}"
 
-def run_experiments(limit: int = None, mock_vllm: bool = False, split: str = "test", retrieval_limit: int = None):
+def run_experiments(limit: int = None, mock_vllm: bool = False, split: str = "test", retrieval_limit: int = None, repo_filter: str = None, version_filter: str = None):
     """
     Run all experiments.
     """
@@ -87,6 +87,13 @@ def run_experiments(limit: int = None, mock_vllm: bool = False, split: str = "te
                 instance_id = instance['instance_id']
                 repo = instance['repo']
                 version = instance['version']
+                
+                # Apply filters
+                if repo_filter and repo != repo_filter:
+                    continue
+                if version_filter and version != version_filter:
+                    continue
+                
                 problem_statement = instance['problem_statement']
                 
                 # Check if we have this repo ingested
@@ -124,7 +131,7 @@ def run_experiments(limit: int = None, mock_vllm: bool = False, split: str = "te
                         # Configure mock to not crash
                         MockRetriever.return_value = MagicMock()
                         
-                        pipeline = RAGPipeline(retriever_type='hybrid', vllm_url='http://localhost:8000')
+                        pipeline = RAGPipeline(retriever_type='hybrid', vllm=MagicMock())
                     
                     # Inject our actual retriever
                     pipeline.retriever = retriever 
@@ -145,7 +152,6 @@ def run_experiments(limit: int = None, mock_vllm: bool = False, split: str = "te
                         q, 
                         instance_id=instance_id,
                         strategy=config['strategies'],
-                        visual_mode=config['visual_mode'],
                         visual_mode=config['visual_mode'],
                         top_k=top_k
                     )
@@ -201,6 +207,8 @@ if __name__ == "__main__":
     parser.add_argument("--mock", action="store_true", help="Mock vLLM")
     parser.add_argument("--split", type=str, default="test", help="Dataset split (dev/test)")
     parser.add_argument("--retrieval_limit", type=int, default=None, help="Token limit for retrieval context (e.g. 13000)")
+    parser.add_argument("--repo", type=str, default=None, help="Filter by repository name")
+    parser.add_argument("--version", type=str, default=None, help="Filter by version")
     args = parser.parse_args()
     
-    run_experiments(limit=args.limit, mock_vllm=args.mock, split=args.split, retrieval_limit=args.retrieval_limit)
+    run_experiments(limit=args.limit, mock_vllm=args.mock, split=args.split, retrieval_limit=args.retrieval_limit, repo_filter=args.repo, version_filter=args.version)
