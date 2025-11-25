@@ -156,19 +156,9 @@ class RAGPipeline:
         sampling_params = SamplingParams(max_tokens=max_tokens, temperature=temperature, top_p=0.9)
         responses = self.vllm.generate(prompt, sampling_params=sampling_params)
 
-        arrival_time = responses[0].metrics.arrival_time
-        first_token_time = responses[0].metrics.first_token_time
-        finished_time = responses[0].metrics.finished_time
-        e2e = finished_time - arrival_time
-        ttft = first_token_time - arrival_time
-
-        print(f"arrival_time: {arrival_time} \n first_token_time: {first_token_time} \n finished_time: {finished_time}")
-
         return {
             'text': responses[0].outputs[0].text,
             'tokens_generated': len(responses[0].outputs[0].token_ids),
-            'ttft_ms': ttft,
-            'e2e_ms': e2e
             # 'raw_response': [response for response in responses] # could not include raw_resoponse as outout type (RequestOutput) is not JSON serializable
         }
 
