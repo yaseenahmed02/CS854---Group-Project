@@ -6,7 +6,7 @@ from qdrant_client import QdrantClient
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 def inspect_image_metadata():
-    db_path = "./qdrant_data_swe_images"
+    db_path = "data/qdrant/qdrant_data_swe_images"
     collection_name = "swe_images"
     
     if not os.path.exists(db_path):

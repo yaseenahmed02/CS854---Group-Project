@@ -1,5 +1,6 @@
 import sys
 import os
+import time
 import uuid
 from pathlib import Path
 from typing import List, Dict, Any
@@ -34,7 +35,7 @@ def setup_qdrant(repo_name: str, version: str, mode: str = "create") -> tuple[Qd
     # Create version-isolated path
     safe_repo = sanitize_path_component(repo_name)
     safe_version = sanitize_path_component(version)
-    db_path = f"./qdrant_data_{safe_repo}_{safe_version}"
+    db_path = f"data/qdrant/qdrant_data_{safe_repo}_{safe_version}"
     
     print(f"Initializing Qdrant at {db_path}...")
     client = QdrantClient(path=db_path)
@@ -75,24 +76,59 @@ def setup_qdrant(repo_name: str, version: str, mode: str = "create") -> tuple[Qd
         
     return client, collection_name, True
 
-def ingest_repo(repo_path: str, repo_name: str, version: str, mode: str = "create"):
+def get_dir_size(path: str) -> int:
+    """Calculate total size of a directory in bytes."""
+    total = 0
+    try:
+        for entry in os.scandir(path):
+            if entry.is_file():
+                total += entry.stat().st_size
+            elif entry.is_dir():
+                total += get_dir_size(entry.path)
+    except Exception as e:
+        print(f"Error calculating size for {path}: {e}")
+    return total
+
+def ingest_repo(repo_path: str, repo_name: str, version: str, mode: str = "create") -> Dict[str, Any]:
     """
     Ingest a repository into Qdrant.
+    Returns metrics dictionary.
     """
+    start_time = time.time()
+    repo_size = get_dir_size(repo_path)
+    
     # 1. Setup Qdrant
     client, collection_name, ready = setup_qdrant(repo_name, version, mode)
     
+    metrics = {
+        "repo": repo_name,
+        "version": version,
+        "repo_size_bytes": repo_size,
+        "embedding_time_ms": 0,
+        "vector_db_size_points": 0,
+        "num_files": 0,
+        "total_chunks": 0
+    }
+
     if not ready:
-        return
+        # Fetch existing stats if possible
+        try:
+            info = client.get_collection(collection_name)
+            metrics["vector_db_size_points"] = info.points_count
+        except:
+            pass
+        return metrics
     
     # 2. Load Documents
     print(f"Loading documents from {repo_path}...")
     loader = FileLoader(repo_path)
     documents = loader.load_repo(repo_path)
     
+    metrics["num_files"] = len(documents)
+    
     if not documents:
         print("No documents found. Exiting.")
-        return
+        return metrics
 
     # 3. Initialize Models
     # We need 3 generators. 
@@ -243,6 +279,18 @@ def ingest_repo(repo_path: str, repo_name: str, version: str, mode: str = "creat
         print(f"Upserted final batch of {len(points)} chunks.")
 
     print(f"Ingestion complete. Total chunks: {total_chunks}")
+    
+    end_time = time.time()
+    metrics["embedding_time_ms"] = (end_time - start_time) * 1000
+    metrics["total_chunks"] = total_chunks
+    
+    try:
+        info = client.get_collection(collection_name)
+        metrics["vector_db_size_points"] = info.points_count
+    except Exception as e:
+        print(f"Error fetching collection info: {e}")
+        
+    return metrics
 
 if __name__ == "__main__":
     import argparse

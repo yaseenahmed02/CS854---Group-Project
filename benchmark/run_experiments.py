@@ -21,6 +21,8 @@ load_dotenv()
 # Configuration
 RESULTS_DIR = Path("results")
 RESULTS_DIR.mkdir(exist_ok=True)
+PREDICTIONS_DIR = RESULTS_DIR / "swebench_predictions"
+PREDICTIONS_DIR.mkdir(exist_ok=True)
 
 # Define Experiments
 # Format: id -> {strategies: [], visual_mode: str}
@@ -55,15 +57,24 @@ def get_collection_name(repo: str, version: str) -> str:
     ver_san = sanitize_path_component(version)
     return f"{repo_san}_{ver_san}"
 
-def run_experiments(limit: int = None, mock_vllm: bool = False, split: str = "test", retrieval_limit: int = None, repo_filter: str = None, version_filter: str = None):
+def run_experiments(limit: int = None, 
+                    mock_vllm: bool = False, 
+                    split: str = "test", 
+                    repo_filter: str = None, 
+                    version_filter: str = None,
+                    total_token_limit: int = None,
+                    retrieval_limit: int = None,
+                    llm_model: str = "gpt-4o-2024-08-06",
+                    llm_provider: str = "openai",
+                    max_output_tokens: int = 16384):
     """
-    Run all experiments.
+    Run experiments on SWE-bench Multimodal.
     """
-    print(f"Loading SWE-bench Multimodal dataset ({split} split)...")
+    print(f"Running experiments (Limit: {limit}, Provider: {llm_provider}, Model: {llm_model})...")
     dataset = load_dataset("princeton-nlp/SWE-bench_Multimodal", split=split)
     
     # Image Client (Step 4 used ./qdrant_data_swe_images)
-    image_db_path = "./qdrant_data_swe_images"
+    image_db_path = "data/qdrant/qdrant_data_swe_images"
     images_client = QdrantClient(path=image_db_path) if os.path.exists(image_db_path) else None
     
     if not images_client:
@@ -98,7 +109,7 @@ def run_experiments(limit: int = None, mock_vllm: bool = False, split: str = "te
                 
                 # Check if we have this repo ingested
                 collection_name = get_collection_name(repo, version)
-                db_path = f"./qdrant_data_{collection_name}"
+                db_path = f"data/qdrant/qdrant_data_{collection_name}"
                 
                 if not os.path.exists(db_path):
                     if count == 0 and os.path.exists("./qdrant_data_test_repo_0_0_1"):
@@ -123,18 +134,15 @@ def run_experiments(limit: int = None, mock_vllm: bool = False, split: str = "te
                         images_client=images_client
                     )
                     
-                    # Init Pipeline
-                    # We need to bypass RAGPipeline's default retriever init which loads files
-                    from unittest.mock import patch, MagicMock
-                    
-                    with patch('rag.pipeline.HybridRetriever') as MockRetriever:
-                        # Configure mock to not crash
-                        MockRetriever.return_value = MagicMock()
-                        
-                        pipeline = RAGPipeline(retriever_type='hybrid', vllm=MagicMock())
-                    
-                    # Inject our actual retriever
-                    pipeline.retriever = retriever 
+                    # Initialize Pipeline
+                    # We initialize it here to allow for strategy-specific config if needed, 
+                    # but for now we reuse the same retriever.
+                    # Note: RAGPipeline now takes llm_model and llm_provider
+                    pipeline = RAGPipeline(
+                        retriever=retriever,
+                        llm_model=llm_model,
+                        llm_provider=llm_provider
+                    )
                     
                     # Mock vLLM if requested
                     if mock_vllm:
@@ -156,11 +164,23 @@ def run_experiments(limit: int = None, mock_vllm: bool = False, split: str = "te
                         top_k=top_k
                     )
                     
+                    # Fetch VLM descriptions if needed for token counting/context
+                    vlm_context = []
+                    if config['visual_mode'] != 'none':
+                        vlm_context = retriever._fetch_visual_context(instance_id)
+
                     # NOW run query
                     # Pass retrieval_limit if set
                     query_kwargs = {"mode": "code_gen"}
                     if retrieval_limit:
                         query_kwargs["retrieval_token_limit"] = retrieval_limit
+                    
+                    if total_token_limit:
+                        query_kwargs["total_token_limit"] = total_token_limit
+                        query_kwargs["vlm_context"] = vlm_context
+                    
+                    if max_output_tokens:
+                        query_kwargs["max_tokens"] = max_output_tokens
                         
                     result = pipeline.query(problem_statement, **query_kwargs)
                     
@@ -186,10 +206,32 @@ def run_experiments(limit: int = None, mock_vllm: bool = False, split: str = "te
                         client.close()
             
             # Save Results
-            output_file = RESULTS_DIR / f"{exp_id}_predictions.json"
+            output_file = PREDICTIONS_DIR / f"{exp_id}_predictions.json"
             with open(output_file, 'w') as f:
                 json.dump(predictions, f, indent=2)
             print(f"Saved {len(predictions)} predictions to {output_file}")
+            
+            # Save Instance Metrics
+            metrics_file = RESULTS_DIR / "instance_metrics.json"
+            existing_metrics = []
+            if metrics_file.exists():
+                try:
+                    with open(metrics_file, 'r') as f:
+                        existing_metrics = json.load(f)
+                except:
+                    pass
+            
+            # Extract metrics from predictions and append
+            for p in predictions:
+                m = p.get('metrics', {})
+                m['instance_id'] = p['instance_id']
+                m['experiment_id'] = exp_id
+                m['timestamp'] = time.strftime("%Y-%m-%dT%H:%M:%S")
+                existing_metrics.append(m)
+                
+            with open(metrics_file, 'w') as f:
+                json.dump(existing_metrics, f, indent=2)
+            print(f"Saved instance metrics to {metrics_file}")
 
     finally:
         if images_client:
@@ -198,7 +240,9 @@ def run_experiments(limit: int = None, mock_vllm: bool = False, split: str = "te
 
     print("\nAll experiments completed.")
     print("To run evaluation:")
-    print("python -m swebench.harness.run_evaluation --predictions_path results/ --dataset_name princeton-nlp/SWE-bench_Multimodal")
+    print("  ./evaluate_all.sh")
+    print("Or manually:")
+    print("  python -m swebench.harness.run_evaluation --predictions_path results/swebench_predictions/<file> --dataset_name princeton-nlp/SWE-bench_Multimodal --report_dir results/swebench_evaluation --run_id <run_id>")
 
 if __name__ == "__main__":
     import argparse

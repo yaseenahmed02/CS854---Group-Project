@@ -31,15 +31,17 @@ def test_code_gen():
             
             # Initialize pipeline with mock vllm to avoid loading model
             mock_vllm = MagicMock()
-            pipeline = RAGPipeline(retriever_type='hybrid', vllm=mock_vllm)
+            # We need to pass the mock retriever instance directly now
+            pipeline = RAGPipeline(llm_provider='mock', retriever=mock_retriever_instance)
             
             # Ensure pipeline uses our mock (it should because we patched the class used in __init__)
             # But RAGPipeline assigns self.retriever = HybridRetriever(...)
             # So self.retriever IS mock_retriever_instance
         
         # Mock vLLM response (the "fixed" file)
+        # Mock vLLM response (the "fixed" file)
         fixed_content = "def hello():\n    print('Hello Universe')\n"
-        pipeline._call_vllm = MagicMock(return_value={
+        pipeline._generate_mock = MagicMock(return_value={
             'text': f"Here is the fix:\n```python\n{fixed_content}```",
             'tokens_generated': 10
         })

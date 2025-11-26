@@ -32,7 +32,21 @@ class TestTokenLimit(unittest.TestCase):
             print("Using real tiktoken")
             
             with patch('rag.pipeline.tiktoken.encoding_for_model', return_value=self.tokenizer):
-                self.pipeline = RAGPipeline(vllm=self.mock_vllm, retriever_type='hybrid')
+                self.pipeline = RAGPipeline(llm_provider="mock", retriever=self.mock_retriever_instance)
+                # Inject the mock vLLM (since we can't pass it in init anymore, we might need to patch it or rely on the mock provider logic)
+                # The 'mock' provider in pipeline.py uses a simple dummy response. 
+                # If we want to test with OUR mock vLLM, we might need to patch `self.pipeline.llm_client`.
+                # But wait, if provider is 'mock', it doesn't use vLLM client.
+                
+                # Let's check pipeline.py to see how 'mock' provider works.
+                # It sets self.llm_client = MockLLMClient().
+                
+                # If I want to control the output, I should access self.pipeline.llm_client
+                # OR just patch the query method? No, I'm testing query logic.
+                
+                # Actually, for this test, I only care about retrieval logic.
+                # So the LLM generation part doesn't matter much, as long as it doesn't crash.
+                # The 'mock' provider should be fine.
 
     def test_token_limit_enforcement(self):
         # Setup mock retrieved docs

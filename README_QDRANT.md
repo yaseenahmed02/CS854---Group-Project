@@ -26,8 +26,20 @@ The system uses a dual-store approach within Qdrant:
 - `pip install -r requirements.txt`
 - OpenAI API Key (for VLM generation)
 - vLLM (or compatible LLM server) running for code generation.
+- **Docker** (Required for running the evaluation step via `swebench`)
 
-### 1. Ingestion
+### 1. Quick Start (Interactive Wizard)
+The easiest way to run the pipeline is using the interactive wizard:
+```bash
+python interactive_pipeline.py
+```
+This wizard will guide you through:
+- Selecting the dataset split (dev/test).
+- Choosing a repository and version.
+- Configuring retrieval limits and LLM providers (OpenAI, vLLM, Mock).
+- Running the pipeline.
+
+### 2. Ingestion (Manual)
 
 **Ingest Codebase:**
 Chunks the repository, generates dense/sparse embeddings, and upserts to Qdrant.

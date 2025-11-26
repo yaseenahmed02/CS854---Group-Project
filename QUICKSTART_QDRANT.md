@@ -31,7 +31,13 @@ python ingest_code_to_qdrant.py \
 python ingest_images_to_qdrant.py --limit 100
 ```
 
-## 3. Run Benchmark (Fast Mode)
+## 3. Run Pipeline (Interactive)
+The easiest way to run experiments is via the wizard:
+```bash
+python interactive_pipeline.py
+```
+
+## 4. Run Benchmark (Manual Fast Mode)
 
 Run the 13-way benchmark with a limit and mock LLM to verify the pipeline.
 
@@ -52,9 +58,16 @@ python benchmark/run_experiments.py
 Score the generated patches.
 
 ```bash
-python -m swebench.harness.run_evaluation \
-    --predictions_path results/ \
-    --dataset_name princeton-nlp/SWE-bench_Multimodal
+# Run evaluation for all results
+for file in results/*_predictions.json; do
+    exp_name=$(basename "$file" _predictions.json)
+    echo "Running evaluation for $exp_name..."
+    python -m swebench.harness.run_evaluation \
+        --predictions_path "$file" \
+        --dataset_name princeton-nlp/SWE-bench_Multimodal \
+        --split dev \
+        --run_id "eval_$exp_name"
+done
 ```
 
 ## 6. Measure Recall

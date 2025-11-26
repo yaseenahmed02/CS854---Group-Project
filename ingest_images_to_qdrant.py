@@ -1,7 +1,10 @@
 import sys
 import os
+import time
 import uuid
 import json
+import requests
+import base64
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 from dotenv import load_dotenv
@@ -20,7 +23,7 @@ from embeddings.embed import EmbeddingGenerator
 # Load environment variables
 load_dotenv()
 
-def setup_qdrant(db_path: str = "./qdrant_data_swe_images") -> tuple[QdrantClient, str]:
+def setup_qdrant(db_path: str = "data/qdrant/qdrant_data_swe_images") -> tuple[QdrantClient, str]:
     """
     Setup Qdrant client and collection for images.
     """
@@ -44,7 +47,7 @@ def setup_qdrant(db_path: str = "./qdrant_data_swe_images") -> tuple[QdrantClien
         
     return client, collection_name
 
-def generate_vlm_description(client: OpenAI, image_url: str, issue_text: str) -> str:
+def generate_vlm_description(client: OpenAI, image_url: str, issue_text: str, model_name: str = "gpt-4o-2024-08-06") -> str:
     """
     Generate a technical description of the image using GPT-4o.
     """
@@ -63,7 +66,7 @@ Please analyze the attached screenshot and provide the technical reverse-enginee
 
     try:
         response = client.chat.completions.create(
-            model="gpt-4o",
+            model=model_name,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {
@@ -80,7 +83,7 @@ Please analyze the attached screenshot and provide the technical reverse-enginee
                     ],
                 },
             ],
-            max_tokens=300,
+            max_tokens=1024,
         )
         return response.choices[0].message.content
     except Exception as e:
@@ -105,7 +108,7 @@ def download_and_encode_image(url: str) -> Optional[str]:
         print(f"Error downloading image {url}: {e}")
         return None
 
-def ingest_images(limit: int = None, mock_vlm: bool = False, store_image: bool = False, split: str = "test"):
+def ingest_images(limit: int = None, mock_vlm: bool = False, store_image: bool = False, split: str = "test", repo_filter: str = None, version_filter: str = None, vlm_model: str = "gpt-4o-2024-08-06"):
     """
     Ingest images from SWE-bench Multimodal.
     """
@@ -145,6 +148,15 @@ def ingest_images(limit: int = None, mock_vlm: bool = False, store_image: bool =
         instance_id = instance.get('instance_id')
         repo = instance.get('repo')
         version = instance.get('version')
+        
+        # Apply filters
+        if repo_filter and repo != repo_filter:
+            continue
+        if version_filter and version != version_filter:
+            continue
+            
+        print(f"DEBUG: Found matching instance {instance_id}. Repo: {repo}, Version: {version}")
+            
         problem_statement = instance.get('problem_statement', '')
         
         # Extract images
@@ -181,6 +193,7 @@ def ingest_images(limit: int = None, mock_vlm: bool = False, store_image: bool =
                 images = images_raw
         
         if not images:
+            print(f"DEBUG: No images found for {instance_id} after parsing. Raw: {images_raw}")
             continue
             
         for img in images:
@@ -193,10 +206,13 @@ def ingest_images(limit: int = None, mock_vlm: bool = False, store_image: bool =
             print(f"Processing image for {instance_id}...")
             
             # Generate VLM Description
+            start_time = time.time()
             if mock_vlm:
                 vlm_desc = f"Mock VLM description for {instance_id}: Visual bug in sidebar navigation."
             else:
-                vlm_desc = generate_vlm_description(openai_client, image_url, problem_statement)
+                vlm_desc = generate_vlm_description(openai_client, image_url, problem_statement, model_name=vlm_model)
+            end_time = time.time()
+            vlm_time_ms = (end_time - start_time) * 1000
             
             # Embed Description
             embedding = dense_gen.embed_query(vlm_desc)
@@ -220,7 +236,9 @@ def ingest_images(limit: int = None, mock_vlm: bool = False, store_image: bool =
                     "repo": repo,
                     "version": version,
                     "original_issue": problem_statement[:200],
-                    "image_base64": image_base64
+                    "image_base64": image_base64,
+                    "vlm_model": "mock" if mock_vlm else vlm_model,
+                    "vlm_generation_time_ms": vlm_time_ms
                 }
             )
             points.append(point)
@@ -249,6 +267,9 @@ if __name__ == "__main__":
     parser.add_argument("--mock", action="store_true", help="Use mock VLM instead of OpenAI API")
     parser.add_argument("--store-image", action="store_true", help="Download and store image base64 in Qdrant")
     parser.add_argument("--split", type=str, default="test", help="Dataset split (dev/test)")
+    parser.add_argument("--repo", type=str, default=None, help="Filter by repository name")
+    parser.add_argument("--version", type=str, default=None, help="Filter by version")
+    parser.add_argument("--vlm_model", type=str, default="gpt-4o-2024-08-06", help="VLM model to use (default: gpt-4o-2024-08-06)")
     args = parser.parse_args()
     
-    ingest_images(limit=args.limit, mock_vlm=args.mock, store_image=args.store_image, split=args.split)
+    ingest_images(limit=args.limit, mock_vlm=args.mock, store_image=args.store_image, split=args.split, repo_filter=args.repo, version_filter=args.version, vlm_model=args.vlm_model)

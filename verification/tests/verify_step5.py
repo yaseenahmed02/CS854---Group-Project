@@ -51,22 +51,20 @@ def test_retriever():
     # Test 3: Visual Augment (Mock)
     # We need an instance_id that exists in swe_images.
     # In Step 4, we ingested 'grommet__grommet-6282' (from mock run output).
+    # DB Path: 'data/qdrant/qdrant_data_test_repo_0_0_1'
+    collection_name = "test_repo_0_0_1"
+    db_path = "data/qdrant/qdrant_data_test_repo_0_0_1"
+    
     # We need to connect to swe_images DB too?
     # FlexibleRetriever takes 'client'. 
-    # But Step 4 created a SEPARATE Qdrant DB at './qdrant_data_swe_images'.
+    # But Step 4 created a SEPARATE Qdrant DB at 'data/qdrant/qdrant_data_swe_images'.
     # QdrantClient(path=...) connects to a specific file/dir.
-    # If we want to access BOTH, we need a client that can see both?
     # In Local mode, QdrantClient is bound to one path.
-    # So FlexibleRetriever might need TWO clients or we should have put all collections in ONE DB path.
-    # The prompt for Step 2 said: "create a specific DB path ... to ensure Version Isolation".
-    # The prompt for Step 4 said: "Connect to the same local Qdrant path as the code ingestion script."
-    # WAIT. Step 4 prompt said: "Connect to the same local Qdrant path as the code ingestion script."
+    
+    # So if we want to retrieve from BOTH, we need TWO clients or a server.
+    # The FlexibleRetriever supports `images_client`.
+    
     # BUT Step 2 prompt said: "create a specific DB path ... (e.g., ./qdrant_data_wp_calypso_10_15_2)".
-    # This implies EACH repo version has its own DB path?
-    # If so, Step 4 "same local Qdrant path" is ambiguous if Step 2 creates dynamic paths.
-    # In Step 4 implementation, I used default `./qdrant_data_swe_images`.
-    # If FlexibleRetriever needs to access both, and they are in different paths (SQLite files), 
-    # we can't do it with one QdrantClient instance in local mode easily unless we attach?
     # Or maybe I should have used one global DB path.
     # Given the current state:
     # Code DB: ./qdrant_data_test_repo_0_0_1

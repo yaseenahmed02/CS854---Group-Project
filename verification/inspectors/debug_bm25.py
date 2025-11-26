@@ -11,7 +11,7 @@ def tokenize(text: str):
     return [t for t in clean_text.split() if t]
 
 def debug_bm25():
-    db_path = "./qdrant_data_test_repo_0_0_1"
+    db_path = "data/qdrant/qdrant_data_test_repo_0_0_1"
     collection_name = "test_repo_0_0_1"
     
     print(f"Connecting to {db_path}...")

@@ -1,8 +1,9 @@
-# Project specific
-qdrant_data*/
+# Qdrant data
+data/qdrant/
 .env
 results/
 data/raw/
+data/repos/
 
 # Python
 __pycache__/

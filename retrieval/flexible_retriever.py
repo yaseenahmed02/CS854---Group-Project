@@ -106,9 +106,9 @@ class FlexibleRetriever:
         clean_text = "".join([c if c.isalnum() else " " for c in text.lower()])
         return [t for t in clean_text.split() if t]
 
-    def _fetch_visual_descriptions(self, instance_id: str) -> List[str]:
-        """Fetch all VLM descriptions from Qdrant for an instance."""
-        descriptions = []
+    def _fetch_visual_context(self, instance_id: str) -> List[Dict[str, Any]]:
+        """Fetch all VLM descriptions and metadata from Qdrant for an instance."""
+        context = []
         try:
             # Search by instance_id in payload
             res = self.images_client.scroll(
@@ -126,11 +126,20 @@ class FlexibleRetriever:
             points, _ = res
             for point in points:
                 desc = point.payload.get("vlm_description")
+                time_ms = point.payload.get("vlm_generation_time_ms", 0)
                 if desc:
-                    descriptions.append(desc)
+                    context.append({
+                        "description": desc,
+                        "generation_time_ms": time_ms
+                    })
         except Exception as e:
-            print(f"Error fetching visual descriptions: {e}")
-        return descriptions
+            print(f"Error fetching visual context: {e}")
+        return context
+
+    def _fetch_visual_descriptions(self, instance_id: str) -> List[str]:
+        """Legacy wrapper for backward compatibility."""
+        context = self._fetch_visual_context(instance_id)
+        return [item['description'] for item in context]
 
     def retrieve(self, 
                  query: str, 

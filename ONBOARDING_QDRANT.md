@@ -120,7 +120,13 @@ print(results['retrieved_documents'])
 
 We have a comprehensive benchmark suite to evaluate different retrieval strategies.
 
-### 1. Run the Experiments
+### Option A: Interactive Wizard (Recommended)
+Use the wizard to configure and run experiments easily:
+```bash
+python interactive_pipeline.py
+```
+
+### Option B: Manual Execution
 This script runs 13 different configurations (e.g., `text_bm25`, `multimodal_fusion_jina`) and saves the results.
 
 ```bash
@@ -138,10 +144,17 @@ python benchmark/run_experiments.py --mock
 Use the official SWE-bench harness to score the generated patches.
 
 ```bash
-python -m swebench.harness.run_evaluation \
-    --predictions_path results/ \
-    --dataset_name princeton-nlp/SWE-bench_Multimodal \
-    --split test
+```bash
+for file in results/*_predictions.json; do
+    exp_name=$(basename "$file" _predictions.json)
+    echo "Running evaluation for $exp_name..."
+    python -m swebench.harness.run_evaluation \
+        --predictions_path "$file" \
+        --dataset_name princeton-nlp/SWE-bench_Multimodal \
+        --split dev \
+        --run_id "eval_$exp_name"
+done
+```
 ```
 
 ### 3. Measure Recall
