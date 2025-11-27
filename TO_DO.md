@@ -1,7 +1,6 @@
 # Doing:
 
 # To Do: 
-- [ ] send the image file to the LLM, not just the retrieved context. 
 
 - [ ] if the instance has no images, skip it. (Dev w/ image 102/102; Test w/ image 462/510)
 
@@ -12,6 +11,8 @@
 
 
 # Done: 
+- [x] send the image file to the LLM, not just the retrieved context. 
+- [x] make image downloading and storage mandatory during ingestion. 
 - [x] Improve the current `run_pipeline.py` strategy to allow for a more responsive way to process the SWE-bench dataset. It should start by asking which split, then presenting all the available repos for that split, with a very short description of the repo project, and then present the versions of the repo and the total number of instances for each version, and then allow the user to select which one(s) to process. It should also allow the user to define the total token limit for the retrieval step.  It should also ask which LLM to use for the VLM image description generation step and for the final LLM generation step (same LLM for both), and what it the maximim output token limit for the final LLM generation step. This could be a series of questions, or a single question with multiple options. Maybe in the console, maybe another way. Consider what is the simplest way to "build"  this command. The current command is too complex and not user-friendly, with too many parameters. Present the plan and ask before starting.
 - [x] Check any places where token limits are hard coded and consider how it influences.
 - [x] Create a metrics file to store the metrics for each instance processed. It should store the time taken to generate the image description, the ammount of tokens in the textual part of the instance, the ammount of images of the instance, the ammount of tokens in the image description (if more than one image, sum it up), the token limit for that run, the ammount of tokens in the retrieved content, the time it took to retrieve the context, the total ammount of tokens in the input to the LLM, and the final solution output token count.

@@ -130,7 +130,9 @@ class FlexibleRetriever:
                 if desc:
                     context.append({
                         "description": desc,
-                        "generation_time_ms": time_ms
+                        "generation_time_ms": time_ms,
+                        "image_url": point.payload.get("image_url"),
+                        "image_base64": point.payload.get("image_base64")
                     })
         except Exception as e:
             print(f"Error fetching visual context: {e}")

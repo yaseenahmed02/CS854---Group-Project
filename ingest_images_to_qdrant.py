@@ -108,7 +108,7 @@ def download_and_encode_image(url: str) -> Optional[str]:
         print(f"Error downloading image {url}: {e}")
         return None
 
-def ingest_images(limit: int = None, mock_vlm: bool = False, store_image: bool = False, split: str = "test", repo_filter: str = None, version_filter: str = None, vlm_model: str = "gpt-4o-2024-08-06"):
+def ingest_images(limit: int = None, mock_vlm: bool = False, split: str = "test", repo_filter: str = None, version_filter: str = None, vlm_model: str = "gpt-4o-2024-08-06"):
     """
     Ingest images from SWE-bench Multimodal.
     """
@@ -217,11 +217,12 @@ def ingest_images(limit: int = None, mock_vlm: bool = False, store_image: bool =
             # Embed Description
             embedding = dense_gen.embed_query(vlm_desc)
             
-            # Optional: Download and store image
-            image_base64 = None
-            if store_image:
-                print(f"Downloading image from {image_url}...")
-                image_base64 = download_and_encode_image(image_url)
+            # Mandatory: Download and store image
+            print(f"Downloading image from {image_url}...")
+            image_base64 = download_and_encode_image(image_url)
+            
+            if not image_base64:
+                print(f"Warning: Failed to download image for {instance_id}. Skipping storage of base64.")
             
             # Create Point
             point_id = str(uuid.uuid4())
@@ -265,11 +266,10 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--limit", type=int, default=None, help="Limit number of images to process")
     parser.add_argument("--mock", action="store_true", help="Use mock VLM instead of OpenAI API")
-    parser.add_argument("--store-image", action="store_true", help="Download and store image base64 in Qdrant")
     parser.add_argument("--split", type=str, default="test", help="Dataset split (dev/test)")
     parser.add_argument("--repo", type=str, default=None, help="Filter by repository name")
     parser.add_argument("--version", type=str, default=None, help="Filter by version")
     parser.add_argument("--vlm_model", type=str, default="gpt-4o-2024-08-06", help="VLM model to use (default: gpt-4o-2024-08-06)")
     args = parser.parse_args()
     
-    ingest_images(limit=args.limit, mock_vlm=args.mock, store_image=args.store_image, split=args.split, repo_filter=args.repo, version_filter=args.version, vlm_model=args.vlm_model)
+    ingest_images(limit=args.limit, mock_vlm=args.mock, split=args.split, repo_filter=args.repo, version_filter=args.version, vlm_model=args.vlm_model)

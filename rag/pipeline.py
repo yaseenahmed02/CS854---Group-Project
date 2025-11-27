@@ -11,7 +11,7 @@ import difflib
 import os
 import time
 from openai import OpenAI
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Union
 from retrieval.vector_retriever import VectorRetriever
 from retrieval.hybrid_retriever import HybridRetriever
 from rag.prompt_builder import PromptBuilder
@@ -86,7 +86,8 @@ class RAGPipeline:
              retrieval_token_limit: Optional[int] = None,
              total_token_limit: Optional[int] = None,
              vlm_descs: Optional[List[str]] = None,
-             vlm_context: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+             vlm_context: Optional[List[Dict[str, Any]]] = None,
+             visual_input_mode: str = "vlm_desc_url_image_file") -> Dict[str, Any]:
         """
         Execute full RAG pipeline: retrieve + generate.
 
@@ -94,10 +95,12 @@ class RAGPipeline:
             query: User query
             max_tokens: Max tokens to generate
             temperature: LLM temperature
-            max_tokens: Max tokens to generate
-            temperature: LLM temperature
             mode: 'qa' or 'code_gen'
             retrieval_token_limit: Optional limit on tokens from retrieved documents
+            total_token_limit: Optional limit on total input tokens
+            vlm_descs: Legacy list of descriptions
+            vlm_context: List of dicts with visual context (desc, url, base64)
+            visual_input_mode: 'vlm_desc', 'vlm_desc_url', 'image_file', 'vlm_desc_url_image_file'
 
         Returns:
             Dictionary with results and metrics
@@ -112,10 +115,6 @@ class RAGPipeline:
         retrieval_time_ms = retrieval_timer.stop()
 
         # 1.5 Apply Token Limit (if set)
-        # 1.5 Apply Token Limit
-        # If total_token_limit is set, we calculate the budget for retrieval
-        # Budget = Total - (System Prompt + Issue + VLM Descs)
-        
         final_retrieval_limit = retrieval_token_limit
 
         # Use vlm_context if provided, otherwise fallback to vlm_descs
@@ -126,33 +125,26 @@ class RAGPipeline:
             vlm_descs_list = vlm_descs if vlm_descs else []
             vlm_time_ms = 0
 
-        final_retrieval_limit = retrieval_token_limit
-
         if total_token_limit and self.tokenizer:
             # Estimate base tokens
-            # System Prompt (approx)
-            system_prompt_tokens = 100 # Rough estimate for the static part
-            
-            # Issue Tokens
+            system_prompt_tokens = 100 # Rough estimate
             issue_tokens = len(self.tokenizer.encode(query))
             
-            # VLM Tokens
             vlm_tokens = 0
-            for desc in vlm_descs_list:
-                vlm_tokens += len(self.tokenizer.encode(desc))
+            # Only count VLM text tokens if we are including descriptions
+            if "vlm_desc" in visual_input_mode:
+                for desc in vlm_descs_list:
+                    vlm_tokens += len(self.tokenizer.encode(desc))
             
             base_tokens = system_prompt_tokens + issue_tokens + vlm_tokens
-            
-            # Calculate budget
             retrieval_budget = total_token_limit - base_tokens
             
             if retrieval_budget < 0:
                 print(f"Warning: Base tokens ({base_tokens}) exceed total limit ({total_token_limit}). Retrieval budget is 0.")
                 retrieval_budget = 0
             
-            print(f"Token Limit: Total={total_token_limit}, Base={base_tokens} (Issue={issue_tokens}, VLM={vlm_tokens}), Retrieval Budget={retrieval_budget}")
+            print(f"Token Limit: Total={total_token_limit}, Base={base_tokens}, Retrieval Budget={retrieval_budget}")
             
-            # Use the tighter constraint
             if final_retrieval_limit:
                 final_retrieval_limit = min(final_retrieval_limit, retrieval_budget)
             else:
@@ -168,43 +160,26 @@ class RAGPipeline:
                     if isinstance(payload, dict):
                         content = payload.get('text', '')
                     else:
-                        # Handle case where payload might be an object (though usually dict from Qdrant)
                         content = getattr(payload, 'text', '')
                 
-                # Estimate or count tokens
                 doc_tokens = len(self.tokenizer.encode(content))
-                
                 if current_tokens + doc_tokens <= final_retrieval_limit:
                     selected_docs.append(doc)
                     current_tokens += doc_tokens
                 else:
-                    # Stop adding if we exceed limit
                     break
-            
-            # Update retrieved_docs to only contain selected ones
             retrieved_docs = selected_docs
-            print(f"Applied retrieval token limit: {final_retrieval_limit}. Retained {len(retrieved_docs)} docs ({current_tokens} tokens).")
+            print(f"Applied retrieval token limit: {final_retrieval_limit}. Retained {len(retrieved_docs)} docs.")
 
         # 2. Prompt building
+        prompt_content = None # Can be str or list
+        
         if mode == "code_gen":
-            # For code gen, we need a specific prompt
-            # And we assume the retrieved docs contain the file to be patched
-            # Let's find the most relevant file from docs
             target_file_content = ""
             target_file_path = ""
             
             if retrieved_docs:
-                # Naively take the top document as the target file
-                # In a real scenario, we might want to let the LLM decide or pass it explicitly
                 top_doc = retrieved_docs[0]
-                
-                # If we have the full file content in 'text' or can load it
-                # The retrieved doc 'text' might be a chunk.
-                # If we want to rewrite the ENTIRE file, we need the full content.
-                # Let's check if 'path' is in metadata and load it if possible.
-                # If not, we rely on the chunk (which might be partial).
-                # For this exercise, let's assume we try to load from disk if path exists.
-                
                 doc_path = top_doc.get('path') or top_doc.get('metadata', {}).get('path')
                 if doc_path and Path(doc_path).exists():
                     try:
@@ -222,25 +197,56 @@ class RAGPipeline:
                 "Do not output diffs. Do not output explanations outside the code block unless necessary.\n"
             )
             
-            user_prompt = (
+            user_prompt_text = (
                 f"Issue: {query}\n\n"
                 f"Target File ({target_file_path}):\n"
                 f"```\n{target_file_content}\n```\n\n"
             )
             
-            # Add VLM Descriptions if present
-            if vlm_descs_list:
-                user_prompt += "\n\nVisual Context (from images):\n"
+            # Add VLM Descriptions if requested
+            if "vlm_desc" in visual_input_mode and vlm_descs_list:
+                user_prompt_text += "\n\nVisual Context (from images):\n"
                 for i, desc in enumerate(vlm_descs_list):
-                    user_prompt += f"Image {i+1}: {desc}\n"
+                    user_prompt_text += f"Image {i+1}: {desc}\n"
             
-            user_prompt += "Please provide the fixed file content."
+            user_prompt_text += "Please provide the fixed file content."
             
-            prompt = f"{system_prompt}\n\n{user_prompt}"
-            if self.tokenizer:
+            full_text_prompt = f"{system_prompt}\n\n{user_prompt_text}"
+            
+            # Construct Multimodal Prompt if needed
+            if visual_input_mode == "vlm_desc":
+                # Legacy text-only mode
+                prompt_content = full_text_prompt
+            else:
+                # Multimodal mode
+                prompt_content = [{"type": "text", "text": full_text_prompt}]
+                
+                if vlm_context:
+                    for item in vlm_context:
+                        # Add URL if requested
+                        if "url" in visual_input_mode and item.get("image_url"):
+                            prompt_content.append({
+                                "type": "image_url",
+                                "image_url": {"url": item["image_url"]}
+                            })
+                        
+                        # Add File (Base64) if requested
+                        if "image_file" in visual_input_mode and item.get("image_base64"):
+                            # Assuming JPEG/PNG, but base64 usually doesn't have header in our ingest?
+                            # ingest_images_to_qdrant.py: base64.b64encode(response.content).decode('utf-8')
+                            # We need to add data URI scheme
+                            b64_data = item["image_base64"]
+                            prompt_content.append({
+                                "type": "image_url",
+                                "image_url": {"url": f"data:image/png;base64,{b64_data}"}
+                            })
+            
+            prompt = prompt_content # Assign to generic name
+            
+            if self.tokenizer and isinstance(prompt, str):
                 prompt_tokens = len(self.tokenizer.encode(prompt))
             else:
-                prompt_tokens = len(prompt) // 4 # Estimate
+                prompt_tokens = 0 # Hard to count for multimodal list without specific logic
             
         else:
             # Standard QA prompt
@@ -401,7 +407,7 @@ class RAGPipeline:
     #         # 'raw_response': [response for response in responses] # could not include raw_resoponse as outout type (RequestOutput) is not JSON serializable
     #     }
 
-    def _generate_openai(self, prompt: str, max_tokens: int = 16384) -> Dict[str, Any]:
+    def _generate_openai(self, prompt: Union[str, List[Dict]], max_tokens: int = 16384) -> Dict[str, Any]:
         """Generate response using OpenAI API."""
         try:
             response = self.openai_client.chat.completions.create(
