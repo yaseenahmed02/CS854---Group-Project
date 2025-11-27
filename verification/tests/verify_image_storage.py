@@ -2,40 +2,65 @@ import sys
 import os
 import base64
 from pathlib import Path
+from datasets import load_dataset
 
 # Add project root to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from qdrant_client import QdrantClient
-from ingest_images_to_qdrant import ingest_images
+from ingestion_engine import IngestionEngine
 
 def verify_image_storage():
     print("1. Clearing existing collection to ensure clean state...")
-    client = QdrantClient(path="data/qdrant/qdrant_data_swe_images")
-    client.delete_collection("swe_images")
-    client.close()
+    # New path for global images collection
+    db_path = "data/qdrant/qdrant_data_swe_bench_images"
+    if os.path.exists(db_path):
+        client = QdrantClient(path=db_path)
+        if client.collection_exists("swe_bench_images"):
+            client.delete_collection("swe_bench_images")
+        client.close()
     
     print("2. Running ingestion for 1 instance (limit=1)...")
-    # We use a known repo/version or just limit=1 to get *something*
-    # We'll use mock=True to avoid OpenAI costs, but we need real image download.
-    # ingest_images uses real download even if mock_vlm is True.
+    # Load a sample instance with images
+    print("   Loading dataset...")
+    dataset = load_dataset("princeton-nlp/SWE-bench_Multimodal", split="dev")
     
-    # Ensure we use a split/repo that has images. markedjs/marked usually has them.
-    ingest_images(limit=1, mock_vlm=True, split="dev", repo_filter="markedjs/marked", version_filter="1.2")
+    target_instance = None
+    for inst in dataset:
+        # markedjs/marked usually has images and is small
+        if inst['repo'] == "markedjs/marked" and inst.get('image_assets'):
+            target_instance = inst
+            break
+            
+    if not target_instance:
+        print("   Warning: Could not find markedjs/marked instance with images. Using first available.")
+        for inst in dataset:
+            if inst.get('image_assets'):
+                target_instance = inst
+                break
     
-    print("\n2. Connecting to Qdrant to verify storage...")
-    client = QdrantClient(path="data/qdrant/qdrant_data_swe_images")
+    if not target_instance:
+        print("FAIL: No instances with images found in dataset.")
+        sys.exit(1)
+
+    print(f"   Ingesting instance: {target_instance['instance_id']}")
+    
+    engine = IngestionEngine(mock_vlm=True)
+    engine.ingest_visuals([target_instance])
+    
+    print("\n3. Connecting to Qdrant to verify storage...")
+    client = QdrantClient(path=db_path)
     
     # Scroll to get points
     points, _ = client.scroll(
-        collection_name="swe_images",
+        collection_name="swe_bench_images",
         limit=1,
         with_payload=True,
         with_vectors=False
     )
     
     if not points:
-        print("FAIL: No points found in 'swe_images' collection.")
+        print("FAIL: No points found in 'swe_bench_images' collection.")
         sys.exit(1)
         
     point = points[0]

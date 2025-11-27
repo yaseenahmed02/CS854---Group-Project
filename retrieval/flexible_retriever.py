@@ -52,7 +52,7 @@ class FlexibleRetriever:
     def _get_model(self, model_type: str) -> EmbeddingGenerator:
         """Lazy load embedding models."""
         if model_type not in self.models:
-            if model_type == 'jina':
+            if model_type == 'dense_jina':
                 self.models[model_type] = EmbeddingGenerator(model_type='dense', model_name='jinaai/jina-embeddings-v2-base-code')
             elif model_type == 'splade':
                 self.models[model_type] = EmbeddingGenerator(model_type='sparse_splade', model_name='prithivida/Splade_PP_en_v1')
@@ -146,7 +146,7 @@ class FlexibleRetriever:
     def retrieve(self, 
                  query: str, 
                  instance_id: Optional[str] = None, 
-                 strategy: List[str] = ["jina"], 
+                 strategy: List[str] = ["dense_jina"], 
                  visual_mode: str = "none", 
                  top_k: int = 10) -> Dict[str, Any]:
         """
@@ -211,7 +211,7 @@ class FlexibleRetriever:
                         })
                     all_results.append(strat_results)
                     
-                elif strat in ["jina", "splade", "bge"]:
+                elif strat in ["dense_jina", "splade", "bge"]:
                     # Qdrant Retrieval
                     model = self._get_model(strat)
                     emb = model.embed_query(q)
@@ -220,8 +220,8 @@ class FlexibleRetriever:
                     query_vector = None
                     vector_name = None
                     
-                    if strat == "jina":
-                        vector_name = "dense"
+                    if strat == "dense_jina":
+                        vector_name = "dense_jina"
                         query_vector = emb.tolist()
                     elif strat in ["splade", "bge"]:
                         vector_name = strat

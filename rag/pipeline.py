@@ -87,7 +87,8 @@ class RAGPipeline:
              total_token_limit: Optional[int] = None,
              vlm_descs: Optional[List[str]] = None,
              vlm_context: Optional[List[Dict[str, Any]]] = None,
-             visual_input_mode: str = "vlm_desc_url_image_file") -> Dict[str, Any]:
+             visual_input_mode: str = "vlm_desc_url_image_file",
+             instance_id: Optional[str] = None) -> Dict[str, Any]:
         """
         Execute full RAG pipeline: retrieve + generate.
 
@@ -101,6 +102,7 @@ class RAGPipeline:
             vlm_descs: Legacy list of descriptions
             vlm_context: List of dicts with visual context (desc, url, base64)
             visual_input_mode: 'vlm_desc', 'vlm_desc_url', 'image_file', 'vlm_desc_url_image_file'
+            instance_id: Optional instance ID for context-aware retrieval
 
         Returns:
             Dictionary with results and metrics
@@ -109,7 +111,18 @@ class RAGPipeline:
         retrieval_timer = Timer()
         retrieval_timer.start()
 
-        retrieval_result = self.retriever.retrieve(query, top_k=self.top_k)
+        # Pass instance_id if available and if retriever supports it
+        # We check if retrieve accepts kwargs or instance_id
+        # For now, we assume our OfflineRetriever needs it, but FlexibleRetriever might not.
+        # We can pass it as a kwarg if the signature allows, or check signature.
+        # But to be safe and simple, let's try passing it if it's not None.
+        # Actually, FlexibleRetriever.retrieve signature is: retrieve(query, instance_id, strategy, ...)
+        # So we should pass it.
+        
+        if instance_id:
+             retrieval_result = self.retriever.retrieve(query, top_k=self.top_k, instance_id=instance_id)
+        else:
+             retrieval_result = self.retriever.retrieve(query, top_k=self.top_k)
         retrieved_docs = retrieval_result['retrieved_documents']
 
         retrieval_time_ms = retrieval_timer.stop()
@@ -178,48 +191,96 @@ class RAGPipeline:
             target_file_content = ""
             target_file_path = ""
             
-            if retrieved_docs:
-                top_doc = retrieved_docs[0]
-                doc_path = top_doc.get('path') or top_doc.get('metadata', {}).get('path')
-                if doc_path and Path(doc_path).exists():
-                    try:
-                        with open(doc_path, 'r', encoding='utf-8') as f:
-                            target_file_content = f.read()
-                        target_file_path = doc_path
-                    except:
-                        target_file_content = top_doc.get('text', '')
-                else:
-                    target_file_content = top_doc.get('text', '')
-            
-            system_prompt = (
-                "You are a Senior Software Engineer. Your task is to fix the issue described in the query.\n"
-                "Rewrite the entire file to fix the issue. Output the full, valid file content enclosed in markdown code blocks.\n"
-                "Do not output diffs. Do not output explanations outside the code block unless necessary.\n"
-            )
-            
-            user_prompt_text = (
-                f"Issue: {query}\n\n"
-                f"Target File ({target_file_path}):\n"
-                f"```\n{target_file_content}\n```\n\n"
-            )
-            
-            # Add VLM Descriptions if requested
+            # Construct Issue Text
+            issue_text = query
             if "vlm_desc" in visual_input_mode and vlm_descs_list:
-                user_prompt_text += "\n\nVisual Context (from images):\n"
+                issue_text += "\n\nVisual Context (from images):\n"
                 for i, desc in enumerate(vlm_descs_list):
-                    user_prompt_text += f"Image {i+1}: {desc}\n"
-            
-            user_prompt_text += "Please provide the fixed file content."
-            
-            full_text_prompt = f"{system_prompt}\n\n{user_prompt_text}"
+                    issue_text += f"Image {i+1}: {desc}\n"
+
+            # Construct Code Context
+            code_context = ""
+            for doc in retrieved_docs:
+                payload = doc.get('payload', {})
+                # Try to get rel_path, fallback to filepath/path
+                rel_path = doc.get('metadata', {}).get('rel_path') or payload.get('rel_path')
+                if not rel_path:
+                    raw_path = doc.get('path') or doc.get('metadata', {}).get('path') or payload.get('filepath')
+                    if raw_path:
+                        rel_path = Path(raw_path).name
+                    else:
+                        rel_path = "unknown_file"
+                
+                content = doc.get('text') or payload.get('text', '')
+                
+                code_context += f"[start of {rel_path}]\n{content}\n[end of {rel_path}]\n"
+
+            prompt_text = f"""You will be provided with a partial code base and an issue statement explaining a problem to resolve.
+<issue>
+{issue_text}
+</issue>
+
+<code>
+{code_context}
+</code>
+
+Here is an example of a patch file. It consists of changes to the code base. It specifies the file names, the line numbers of each change, and the removed and added lines. A single patch file can contain changes to multiple files.
+
+<patch>
+diff --git a/file.py b/file.py
+--- a/file.py
++++ b/file.py
+@@ -1,27 +1,35 @@
+ def euclidean(a, b):
+-    while b:
+-        a, b = b, a % b
+-    return a
++    if b == 0:
++        return a
++    return euclidean(b, a % b)
+ 
+ def bresenham(x0, y0, x1, y1):
++    points = []
++    dx = abs(x1 - x0)
++    dy = abs(y1 - y0)
++    sx = 1 if x0 < x1 else -1
++    sy = 1 if y0 < y1 else -1
++    err = dx - dy
++    
+     while True:
+-        plot(x0, y0)
++        points.append((x0, y0))
+         if x0 == x1 and y0 == y1:
+             break
+-        e2 = 2 * err
+-        if e2 > -dy:
+-            err -= dy
+-            x0 += sx
+-        if e2 < dx:
+-            err += dx
+-            y0 += sy
++        e2 = 2 * err
++        if e2 > -dy:
++            err -= dy
++            x0 += sx
++        if e2 < dx:
++            err += dx
++            y0 += sy
++    return points
++</patch>
+
+I need you to solve the provided issue by generating a single patch file that I can apply directly to this repository using git apply. Please respond with a single patch file in the format shown above.
+
+Respond below: 
+"""
             
             # Construct Multimodal Prompt if needed
             if visual_input_mode == "vlm_desc":
                 # Legacy text-only mode
-                prompt_content = full_text_prompt
+                prompt_content = prompt_text
             else:
                 # Multimodal mode
-                prompt_content = [{"type": "text", "text": full_text_prompt}]
+                prompt_content = [{"type": "text", "text": prompt_text}]
                 
                 if vlm_context:
                     for item in vlm_context:
@@ -246,7 +307,7 @@ class RAGPipeline:
             if self.tokenizer and isinstance(prompt, str):
                 prompt_tokens = len(self.tokenizer.encode(prompt))
             else:
-                prompt_tokens = 0 # Hard to count for multimodal list without specific logic
+                prompt_tokens = 0 
             
         else:
             # Standard QA prompt
@@ -273,7 +334,28 @@ class RAGPipeline:
                 llm_response = self._generate_mock(prompt, max_tokens=max_tokens)
                 
             answer = llm_response.get('text', '')
-            final_answer = extract_diff(answer) # Kept as utility function call
+            
+            # Extract patch from <patch> tags
+            import re
+            patch_match = re.search(r'<patch>(.*?)</patch>', answer, re.DOTALL)
+            if patch_match:
+                final_answer = patch_match.group(1).strip()
+            else:
+                # Fallback: try to find markdown code block
+                code_block_match = re.search(r'```(?:diff)?\n(.*?)```', answer, re.DOTALL)
+                if code_block_match:
+                    final_answer = code_block_match.group(1).strip()
+                else:
+                    # Fallback: just return raw answer
+                    final_answer = answer.strip()
+
+            # Clean markdown fences if present (extra safety for all cases)
+            final_answer = re.sub(r'^```\w*\n', '', final_answer)
+            final_answer = re.sub(r'\n```$', '', final_answer)
+            
+            # Ensure patch ends with newline (git apply requirement)
+            if final_answer and not final_answer.endswith('\n'):
+                final_answer += '\n'
         else:
             # QA Mode (legacy/simple)
             final_answer = "QA mode not fully implemented with new providers."
@@ -281,30 +363,6 @@ class RAGPipeline:
 
         generation_time_ms = (time.time() - generation_start) * 1000       
         
-        # 4. Post-processing for code_gen (moved into the if mode == "code_gen" block above)
-        # final_answer = answer # This line is now handled by the dispatch logic
-        if mode == "code_gen" and target_file_content:
-            # Extract code
-            generated_code = extract_diff(answer)
-            
-            # Calculate unified diff
-            original_lines = target_file_content.splitlines(keepends=True)
-            generated_lines = generated_code.splitlines(keepends=True)
-            
-            diff = difflib.unified_diff(
-                original_lines,
-                generated_lines,
-                fromfile=f"a/{Path(target_file_path).name}" if target_file_path else "a/original",
-                tofile=f"b/{Path(target_file_path).name}" if target_file_path else "b/modified",
-                lineterm=""
-            )
-            
-            diff_text = "".join(diff)
-            if diff_text:
-                final_answer = diff_text
-            else:
-                final_answer = "No changes detected or diff generation failed."
-
         # 5. Compile results
         
         # Calculate detailed metrics
@@ -325,11 +383,6 @@ class RAGPipeline:
         issue_text_tokens = issue_tokens if total_token_limit else 0
         vlm_tokens_count = vlm_tokens if total_token_limit else 0
         
-        # Recalculate total input based on components as requested
-        # Note: This might differ slightly from actual prompt_tokens if system prompt is excluded here
-        # But user requested: total_input_prompt_tokens = vlm_tokens + issue_tokens + retrieved_tokens
-        # We should probably include system_prompt_tokens if we want it to be accurate to "prompt_tokens"
-        # However, strictly following user formula:
         total_input_prompt_tokens = vlm_tokens_count + issue_text_tokens + retrieved_tokens
         
         output_generated_tokens = llm_response.get('tokens_generated', 0)
@@ -364,7 +417,12 @@ class RAGPipeline:
             },
             'retrieval_method': getattr(self.retriever, 'retrieval_strategy', 'flexible'),
             'llm_response': llm_response,
-            'mode': mode
+            'mode': mode,
+            # Debug/Verification Details
+            'prompt': prompt,
+            'issue_text': issue_text,
+            'code_context': code_context,
+            'vlm_descs': vlm_descs_list
         }
 
         return result
@@ -460,7 +518,7 @@ class RAGPipeline:
     def _generate_mock(self, prompt: str, max_tokens: int = 10) -> Dict[str, Any]:
         """Return a mock response for testing."""
         return {
-            "text": "```diff\n--- a/file.py\n+++ b/file.py\n@@ -1,1 +1,1 @@\n-foo\n+bar\n```",
+            "text": "<patch>\ndiff --git a/file.py b/file.py\n--- a/file.py\n+++ b/file.py\n@@ -1,1 +1,1 @@\n-foo\n+bar\n</patch>",
             "tokens_generated": 10
         }
 
