@@ -31,29 +31,29 @@ EXPERIMENTS = {                                       ## Running only 6 experime
     "text_bm25":   {"strategies": ["bm25"], "visual_mode": "none"},                                         ## The "Control Group". 
     # "text_splade": {"strategies": ["splade"], "visual_mode": "none"},
     "text_bge":    {"strategies": ["bge"], "visual_mode": "none"},                                          ## The "Neural Sparse" Challenger.
-    "text_jina":   {"strategies": ["jina"], "visual_mode": "none"},                                         ## The "Dense" Challenger.      
+    "text_dense_jina":   {"strategies": ["dense_jina"], "visual_mode": "none"},                                         ## The "Dense" Challenger.      
 
     # --- Text-Only Hybrid (RRF Fusion) ---
-    # "text_hybrid_jina_bm25":   {"strategies": ["jina", "bm25"], "visual_mode": "none"},
-    # "text_hybrid_jina_splade": {"strategies": ["jina", "splade"], "visual_mode": "none"},
-    "text_hybrid_jina_bge":    {"strategies": ["jina", "bge"], "visual_mode": "none"},                      ## The "Hybrid" Challenger, possibly the"Text-Only" Champion. 
+    # "text_hybrid_jina_bm25":   {"strategies": ["dense_jina", "bm25"], "visual_mode": "none"},
+    # "text_hybrid_jina_splade": {"strategies": ["dense_jina", "splade"], "visual_mode": "none"},
+    "text_hybrid_jina_bge":    {"strategies": ["dense_jina", "bge"], "visual_mode": "none"},                      ## The "Hybrid" Challenger, possibly the"Text-Only" Champion. 
 
     # --- Visual-Only ---
-    # "visual_only_jina": {"strategies": ["jina"], "visual_mode": "visual_only"},
+    # "visual_only_jina": {"strategies": ["dense_jina"], "visual_mode": "visual_only"},
 
     # --- Multimodal Fusion (Text + Visual) ---
     # "multimodal_fusion_bm25":   {"strategies": ["bm25"], "visual_mode": "fusion"},
     # "multimodal_fusion_splade": {"strategies": ["splade"], "visual_mode": "fusion"},
     # "multimodal_fusion_bge":    {"strategies": ["bge"], "visual_mode": "fusion"},
-    "multimodal_fusion_jina":   {"strategies": ["jina"], "visual_mode": "fusion"},                          ## The "Multimodal Fusion" Challenger, showing the "Visual Delta" test against `text_jina`.
+    "multimodal_fusion_jina":   {"strategies": ["dense_jina"], "visual_mode": "fusion"},                          ## The "Multimodal Fusion" Challenger, showing the "Visual Delta" test against `text_jina`.
 
     # --- The "Kitchen Sink" (Hybrid Text + Visual) ---
-    "multimodal_fusion_hybrid_jina_best_sparse": {"strategies": ["jina", "bge"], "visual_mode": "fusion"},  ## The "State-of-the-Art" Attempt, fusing Dense + BGE + Visual.
+    "multimodal_fusion_hybrid_jina_best_sparse": {"strategies": ["dense_jina", "bge"], "visual_mode": "fusion"},  ## The "State-of-the-Art" Attempt, fusing Dense + BGE + Visual.
 
     # --- New Multimodal Input Modes ---
-    # "multimodal_url_jina": {"strategies": ["jina"], "visual_mode": "fusion", "visual_input_mode": "vlm_desc_url"},
-    # "multimodal_file_jina": {"strategies": ["jina"], "visual_mode": "fusion", "visual_input_mode": "image_file"},
-    # "multimodal_all_jina": {"strategies": ["jina"], "visual_mode": "fusion", "visual_input_mode": "vlm_desc_url_image_file"},
+    # "multimodal_url_jina": {"strategies": ["dense_jina"], "visual_mode": "fusion", "visual_input_mode": "vlm_desc_url"},
+    # "multimodal_file_jina": {"strategies": ["dense_jina"], "visual_mode": "fusion", "visual_input_mode": "image_file"},
+    # "multimodal_all_jina": {"strategies": ["dense_jina"], "visual_mode": "fusion", "visual_input_mode": "vlm_desc_url_image_file"},
 }
 
 def get_collection_name(repo: str, version: str) -> str:

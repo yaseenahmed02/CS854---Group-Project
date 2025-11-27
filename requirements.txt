@@ -32,3 +32,4 @@ swebench>=2.0.0
 vllm<0.11
 # Development
 pytest
+questionary>=2.0.0
