@@ -2,6 +2,7 @@ import sys
 import os
 import time
 import uuid
+import json
 from pathlib import Path
 from typing import List, Dict, Any
 
@@ -38,6 +39,8 @@ def setup_qdrant(repo_name: str, version: str, mode: str = "create") -> tuple[Qd
     db_path = f"data/qdrant/qdrant_data_{safe_repo}_{safe_version}"
     
     print(f"Initializing Qdrant at {db_path}...")
+    print(f"Current working directory: {os.getcwd()}")
+    print(f"Absolute DB path: {os.path.abspath(db_path)}")
     client = QdrantClient(path=db_path)
     
     collection_name = f"{safe_repo}_{safe_version}"
@@ -66,7 +69,7 @@ def setup_qdrant(repo_name: str, version: str, mode: str = "create") -> tuple[Qd
         client.create_collection(
             collection_name=collection_name,
             vectors_config={
-                "dense": VectorParams(size=768, distance=Distance.COSINE) # Jina-v2-base-code is 768
+                "dense_jina": VectorParams(size=768, distance=Distance.COSINE) # Jina-v2-base-code is 768
             },
             sparse_vectors_config={
                 "splade": SparseVectorParams(),
@@ -105,6 +108,10 @@ def ingest_repo(repo_path: str, repo_name: str, version: str, mode: str = "creat
         "version": version,
         "repo_size_bytes": repo_size,
         "embedding_time_ms": 0,
+        "chunking_time_ms": 0,
+        "dense_jina_time_ms": 0,
+        "splade_time_ms": 0,
+        "bge_time_ms": 0,
         "vector_db_size_points": 0,
         "num_files": 0,
         "total_chunks": 0
@@ -146,24 +153,39 @@ def ingest_repo(repo_path: str, repo_name: str, version: str, mode: str = "creat
     points = []
     total_chunks = 0
     
+    # Timers
+    total_chunking_time = 0
+    total_dense_time = 0
+    total_splade_time = 0
+    total_bge_time = 0
+    
     print("Processing documents...")
     for doc in documents:
         file_content = doc['text']
         file_path = doc['path']
         
         # Chunking
+        t0 = time.time()
         chunks = chunker.chunk_file(file_content, file_path)
+        total_chunking_time += (time.time() - t0)
         
         for i, chunk_text in enumerate(chunks):
             total_chunks += 1
             
             # Generate Embeddings
             # Dense
+            t0 = time.time()
             dense_emb = dense_gen.embed_query(chunk_text)
+            total_dense_time += (time.time() - t0)
             
             # Sparse
+            t0 = time.time()
             splade_emb = splade_gen.embed_query(chunk_text)
+            total_splade_time += (time.time() - t0)
+            
+            t0 = time.time()
             bge_emb = bge_gen.embed_query(chunk_text)
+            total_bge_time += (time.time() - t0)
             
             # Prepare Point
             point_id = str(uuid.uuid4())
@@ -178,22 +200,7 @@ def ingest_repo(repo_path: str, repo_name: str, version: str, mode: str = "creat
                 # However, standard SPLADE/BGE usually work with vocabulary indices.
                 # Let's check embed.py again.
                 # embed.py _generate_splade returns {token: weight}.
-                # We need the tokenizer's vocab ID for Qdrant if we want to be standard.
-                # Or we can hash the token string to a large integer space.
-                # Given Qdrant's sparse support, it expects `indices` and `values`.
-                # If we use the model's vocab indices, that's best.
-                # Let's modify embed.py or handle it here.
-                # Actually, `embed_query` in `embed.py` returns what `_generate_splade` returns.
-                # `_generate_splade` decodes to strings: `token = self.tokenizer.decode([idx])`.
-                # This was a mistake in my previous step if we want to use Qdrant directly efficiently.
-                # But wait, Qdrant doesn't know the tokenizer vocab.
-                # If we use vocab indices, we must ensure query time uses same tokenizer.
-                # Let's assume for now we need to convert back to indices or use a hash.
-                # Since I can't easily change embed.py right now without another tool call, 
-                # and I want to be efficient, I will use a simple hash of the token string for now, 
-                # OR better: I should have returned indices in embed.py.
-                # Let's check if I can access the tokenizer from here.
-                # `splade_gen.tokenizer` is available.
+                # We need the tokenizer's vocab ID for Qdrant if we want to use standard sparse vectors.
                 pass
 
             # Correction: I need to get indices.
@@ -247,7 +254,7 @@ def ingest_repo(repo_path: str, repo_name: str, version: str, mode: str = "creat
             point = models.PointStruct(
                 id=point_id,
                 vector={
-                    "dense": dense_emb.tolist(),
+                    "dense_jina": dense_emb.tolist(),
                     "splade": models.SparseVector(indices=splade_indices, values=splade_values),
                     "bge": models.SparseVector(indices=bge_indices, values=bge_values)
                 },
@@ -281,7 +288,11 @@ def ingest_repo(repo_path: str, repo_name: str, version: str, mode: str = "creat
     print(f"Ingestion complete. Total chunks: {total_chunks}")
     
     end_time = time.time()
-    metrics["embedding_time_ms"] = (end_time - start_time) * 1000
+    metrics["embedding_time_ms"] = round((end_time - start_time) * 1000, 2)
+    metrics["chunking_time_ms"] = round(total_chunking_time * 1000, 2)
+    metrics["dense_jina_time_ms"] = round(total_dense_time * 1000, 2)
+    metrics["splade_time_ms"] = round(total_splade_time * 1000, 2)
+    metrics["bge_time_ms"] = round(total_bge_time * 1000, 2)
     metrics["total_chunks"] = total_chunks
     
     try:
@@ -302,4 +313,25 @@ if __name__ == "__main__":
     
     args = parser.parse_args()
     
-    ingest_repo(args.repo_path, args.repo_name, args.version, args.mode)
+    metrics = ingest_repo(args.repo_path, args.repo_name, args.version, args.mode)
+    
+    # Save metrics
+    results_dir = Path("results")
+    results_dir.mkdir(exist_ok=True)
+    metrics_file = results_dir / "ingestion_metrics.json"
+    
+    existing_metrics = []
+    if metrics_file.exists():
+        try:
+            with open(metrics_file, 'r') as f:
+                existing_metrics = json.load(f)
+        except:
+            pass
+            
+    # Add timestamp
+    metrics['timestamp'] = time.strftime("%Y-%m-%dT%H:%M:%S")
+    existing_metrics.append(metrics)
+    
+    with open(metrics_file, 'w') as f:
+        json.dump(existing_metrics, f, indent=2)
+    print(f"Saved ingestion metrics to {metrics_file}")

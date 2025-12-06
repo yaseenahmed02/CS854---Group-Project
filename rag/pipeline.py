@@ -132,13 +132,14 @@ class RAGPipeline:
 
         # Use vlm_context if provided, otherwise fallback to vlm_descs
         if vlm_context:
-            vlm_descs_list = [item['description'] for item in vlm_context]
-            vlm_time_ms = sum(item.get('generation_time_ms', 0) for item in vlm_context)
+            vlm_descs_list = [item['vlm_description'] for item in vlm_context]
+            vlm_time_ms = sum(item.get('vlm_generation_time_ms', 0) for item in vlm_context)
         else:
             vlm_descs_list = vlm_descs if vlm_descs else []
             vlm_time_ms = 0
 
-        if total_token_limit and self.tokenizer:
+        # Always calculate token counts for metrics
+        if self.tokenizer:
             # Estimate base tokens
             system_prompt_tokens = 100 # Rough estimate
             issue_tokens = len(self.tokenizer.encode(query))
@@ -150,18 +151,23 @@ class RAGPipeline:
                     vlm_tokens += len(self.tokenizer.encode(desc))
             
             base_tokens = system_prompt_tokens + issue_tokens + vlm_tokens
-            retrieval_budget = total_token_limit - base_tokens
             
-            if retrieval_budget < 0:
-                print(f"Warning: Base tokens ({base_tokens}) exceed total limit ({total_token_limit}). Retrieval budget is 0.")
-                retrieval_budget = 0
-            
-            print(f"Token Limit: Total={total_token_limit}, Base={base_tokens}, Retrieval Budget={retrieval_budget}")
-            
-            if final_retrieval_limit:
-                final_retrieval_limit = min(final_retrieval_limit, retrieval_budget)
-            else:
-                final_retrieval_limit = retrieval_budget
+            if total_token_limit:
+                retrieval_budget = total_token_limit - base_tokens
+                
+                if retrieval_budget < 0:
+                    print(f"Warning: Base tokens ({base_tokens}) exceed total limit ({total_token_limit}). Retrieval budget is 0.")
+                    retrieval_budget = 0
+                
+                print(f"Token Limit: Total={total_token_limit}, Base={base_tokens}, Retrieval Budget={retrieval_budget}")
+                
+                if final_retrieval_limit:
+                    final_retrieval_limit = min(final_retrieval_limit, retrieval_budget)
+                else:
+                    final_retrieval_limit = retrieval_budget
+        else:
+            issue_tokens = 0
+            vlm_tokens = 0
 
         if final_retrieval_limit is not None and self.tokenizer and retrieved_docs:
             selected_docs = []
@@ -365,6 +371,8 @@ Respond below:
         
         # 5. Compile results
         
+        # 5. Compile results
+        
         # Calculate detailed metrics
         retrieved_tokens = 0
         if self.tokenizer:
@@ -380,15 +388,45 @@ Respond below:
                  retrieved_tokens += len(self.tokenizer.encode(content))
         
         # Metric Renaming and Calculation
-        issue_text_tokens = issue_tokens if total_token_limit else 0
-        vlm_tokens_count = vlm_tokens if total_token_limit else 0
+        issue_text_tokens = issue_tokens
+        vlm_tokens_count = vlm_tokens
         
-        total_input_prompt_tokens = vlm_tokens_count + issue_text_tokens + retrieved_tokens
+        # Calculate total input prompt tokens from the actual prompt used
+        if self.tokenizer and isinstance(prompt, str):
+             total_input_prompt_tokens = len(self.tokenizer.encode(prompt))
+        elif self.tokenizer and isinstance(prompt, list):
+             # For multimodal list prompts, we can't easily count "tokens" in the same way.
+             # We will approximate by summing text parts.
+             total_input_prompt_tokens = 0
+             for part in prompt:
+                 if isinstance(part, dict) and part.get('type') == 'text':
+                     total_input_prompt_tokens += len(self.tokenizer.encode(part['text']))
+        else:
+             total_input_prompt_tokens = prompt_tokens # Fallback to earlier estimate
+        
+        # Calculate prompt template tokens
+        # total = template + issue + vlm + retrieved
+        # template = total - (issue + vlm + retrieved)
+        prompt_template_tokens = total_input_prompt_tokens - (issue_text_tokens + vlm_tokens_count + retrieved_tokens)
+        
+        # Ensure non-negative (can happen due to token merging differences)
+        if prompt_template_tokens < 0:
+            prompt_template_tokens = 0
+            # Adjust total to match sum if we force template to 0? 
+            # Or just accept the discrepancy. Let's accept discrepancy but report 0 for template.
         
         output_generated_tokens = llm_response.get('tokens_generated', 0)
         total_io_tokens = total_input_prompt_tokens + output_generated_tokens
         
-        total_retrieval_time = vlm_time_ms + retrieval_time_ms
+        # Extract search_time_ms if available (pure search time)
+        search_time_ms = retrieval_result.get('search_time_ms', 0)
+        search_time_breakdown = retrieval_result.get('search_time_breakdown', {})
+        
+        # If search_time_ms is available, we use it as the "retrieval_time_ms" (pure search)
+        # Otherwise we fall back to the measured retrieval_timer (which includes overhead)
+        final_retrieval_time_ms = search_time_ms if search_time_ms > 0 else retrieval_time_ms
+        
+        total_retrieval_time = vlm_time_ms + final_retrieval_time_ms
         total_io_time_ms = total_retrieval_time + generation_time_ms
 
         result = {
@@ -400,20 +438,32 @@ Respond below:
             'metrics': {
                 # Order requested by user
                 # instance_id and experiment_id are added in run_experiments.py
-                'num_images': len(vlm_descs_list),
-                'vlm_generation_time_ms': vlm_time_ms,
-                'retrieval_time_ms': retrieval_time_ms,
+                # 'num_images': len(vlm_descs_list), # Added in run_experiments.py if visual_mode != none
+                # 'vlm_generation_time_ms': vlm_time_ms, # Added in run_experiments.py if visual_mode != none
+                'retrieval_time_ms': final_retrieval_time_ms, # Pure search time if available
+                # Granular search times are added in run_experiments.py based on active strategies
                 'total_retrieval_time_ms': total_retrieval_time,
                 'generation_time_ms': generation_time_ms,
                 'total_io_time_ms': total_io_time_ms,
+                
+                # Extra debug metric
+
                 
                 'input_total_token_limit': total_token_limit,
                 'issue_text_tokens': issue_text_tokens,
                 'vlm_tokens': vlm_tokens_count,
                 'retrieved_tokens': retrieved_tokens,
+                'prompt_template_tokens': prompt_template_tokens,
                 'total_input_prompt_tokens': total_input_prompt_tokens,
                 'output_generated_tokens': output_generated_tokens,
-                'total_io_tokens': total_io_tokens
+                'total_io_tokens': total_io_tokens,
+                'input_prompt_text': prompt if isinstance(prompt, str) else json.dumps(prompt),
+                'retrieved_file_paths': [
+                    (doc.get('metadata', {}).get('rel_path') or 
+                     doc.get('payload', {}).get('rel_path') or 
+                     Path(doc.get('path') or doc.get('metadata', {}).get('path') or doc.get('payload', {}).get('filepath') or "unknown").name)
+                    for doc in retrieved_docs
+                ]
             },
             'retrieval_method': getattr(self.retriever, 'retrieval_strategy', 'flexible'),
             'llm_response': llm_response,
@@ -422,7 +472,12 @@ Respond below:
             'prompt': prompt,
             'issue_text': issue_text,
             'code_context': code_context,
-            'vlm_descs': vlm_descs_list
+            'vlm_descs': vlm_descs_list,
+            'vlm_descs': vlm_descs_list,
+            'search_time_breakdown': search_time_breakdown, # Pass for granular metrics in run_experiments
+            'num_images': len(vlm_descs_list), # Pass for metrics in run_experiments
+            'vlm_generation_time_ms': vlm_time_ms, # Pass for metrics in run_experiments
+            'visual_embedding_time_ms': retrieval_result.get('visual_embedding_time_ms', 0.0) # Pass for metrics in run_experiments
         }
 
         return result

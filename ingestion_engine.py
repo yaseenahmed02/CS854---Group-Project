@@ -5,6 +5,7 @@ import uuid
 import json
 import base64
 import requests
+import tiktoken
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 from dotenv import load_dotenv
@@ -45,7 +46,17 @@ class IngestionEngine:
         self.dense_gen = EmbeddingGenerator(model_type='dense', model_name='jinaai/jina-embeddings-v2-base-code')
         self.splade_gen = EmbeddingGenerator(model_type='sparse_splade', model_name='prithivida/Splade_PP_en_v1')
         self.bge_gen = EmbeddingGenerator(model_type='sparse_bgem3', model_name='BAAI/bge-m3')
+        self.bge_gen = EmbeddingGenerator(model_type='sparse_bgem3', model_name='BAAI/bge-m3')
         self.chunker = SemanticChunker()
+        
+        # Initialize Tokenizer for metrics
+        try:
+            self.tokenizer = tiktoken.encoding_for_model(self.vlm_model)
+        except KeyError:
+            self.tokenizer = tiktoken.get_encoding("cl100k_base")
+
+    def _get_token_count(self, text: str) -> int:
+        return len(self.tokenizer.encode(text))
 
     def _setup_repo_collection(self, repo: str, version: str) -> tuple[QdrantClient, str]:
         safe_repo = sanitize_path_component(repo)
@@ -80,11 +91,19 @@ class IngestionEngine:
             )
         return client, name
 
-    def _generate_all_embeddings(self, text: str) -> dict:
+    def _generate_all_embeddings(self, text: str) -> tuple[dict, dict]:
         """Generate Dense, SPLADE, and BGE embeddings for a text."""
+        start = time.time()
         dense = self.dense_gen.embed_query(text)
+        dense_time = (time.time() - start) * 1000
+
+        start = time.time()
         splade = self.splade_gen.embed_query(text)
+        splade_time = (time.time() - start) * 1000
+
+        start = time.time()
         bge = self.bge_gen.embed_query(text)
+        bge_time = (time.time() - start) * 1000
         
         # Helper to process sparse vectors
         def process_sparse(emb, tokenizer):
@@ -117,11 +136,19 @@ class IngestionEngine:
         bge_tokenizer = getattr(self.bge_gen.model, 'tokenizer', None)
         bge_indices, bge_values = process_sparse(bge, bge_tokenizer)
 
-        return {
+        vectors = {
             "dense_jina": dense.tolist(),
             "splade": models.SparseVector(indices=splade_indices, values=splade_values),
             "bge": models.SparseVector(indices=bge_indices, values=bge_values)
         }
+        
+        timings = {
+            "embedding_time_ms_jina": dense_time,
+            "embedding_time_ms_splade": splade_time,
+            "embedding_time_ms_bge": bge_time
+        }
+        
+        return vectors, timings
 
     def ingest_codebase(self, repo: str, version: str):
         print(f"--- Ingesting Codebase: {repo} v{version} ---")
@@ -166,7 +193,7 @@ class IngestionEngine:
                 })
                 
                 # Embeddings
-                vectors = self._generate_all_embeddings(chunk_text)
+                vectors, _ = self._generate_all_embeddings(chunk_text)
                 
                 # Point
                 point = models.PointStruct(
@@ -206,17 +233,26 @@ class IngestionEngine:
             instance_id = instance['instance_id']
             problem_statement = instance['problem_statement']
             
-            vectors = self._generate_all_embeddings(problem_statement)
+            start_time = time.time()
+            vectors, timings = self._generate_all_embeddings(problem_statement)
+            ingestion_time_ms = (time.time() - start_time) * 1000
+            
+            issue_tokens = self._get_token_count(problem_statement)
+            
+            payload = {
+                "instance_id": instance_id,
+                "repo": instance['repo'],
+                "version": instance['version'],
+                "problem_statement": problem_statement,
+                "embedding_time_ms": ingestion_time_ms,
+                "issue_tokens": issue_tokens
+            }
+            payload.update(timings)
             
             point = models.PointStruct(
                 id=str(uuid.uuid4()),
                 vector=vectors,
-                payload={
-                    "instance_id": instance_id,
-                    "repo": instance['repo'],
-                    "version": instance['version'],
-                    "problem_statement": problem_statement
-                }
+                payload=payload
             )
             points.append(point)
             
@@ -253,6 +289,8 @@ class IngestionEngine:
                 
                 print(f"Processing image for {instance_id}: {url}")
                 
+                start_time = time.time()
+                
                 # Download & Base64
                 try:
                     resp = requests.get(url, timeout=10)
@@ -272,9 +310,12 @@ class IngestionEngine:
                     # For brevity, implementing inline or calling helper
                     # I'll implement a simple inline call using self.openai_client
                      vlm_desc = self._generate_vlm_desc(url, instance['problem_statement'])
+                
+                vlm_time_ms = (time.time() - start_time) * 1000
+                vlm_tokens = self._get_token_count(vlm_desc)
 
-                # Embed Description (All 3 types)
-                vectors = self._generate_all_embeddings(vlm_desc)
+                # Embeddings Description (All 3 types)
+                vectors, _ = self._generate_all_embeddings(vlm_desc)
                 
                 point = models.PointStruct(
                     id=str(uuid.uuid4()),
@@ -285,7 +326,9 @@ class IngestionEngine:
                         "vlm_description": vlm_desc,
                         "image_base64": image_base64,
                         "repo": instance['repo'],
-                        "version": instance['version']
+                        "version": instance['version'],
+                        "vlm_generation_time_ms": vlm_time_ms,
+                        "vlm_tokens": vlm_tokens
                     }
                 )
                 points.append(point)

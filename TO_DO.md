@@ -1,6 +1,12 @@
 # Doing:
 
 # To Do: 
+
+- [ ]  close downs on repos+experiments in an incremental way, so I can pass a subset of predictions.json to Taebin. Decide on a set of repos, run a group of experiments, and pass the predictions.json to Taebin. If later on I want to run more experiments, I can just pass the new predictions.json to Taebin. 
+
+
+- [ ] check the token limit parameter for the input to the final LLM generation step. 
+
 - [ ] fix the metrics. 
 
 - [ ] better understand how the split for files bigger than 8192 tokens during the repo ingestion step works. 
@@ -10,6 +16,10 @@
 
 
 # Done: 
+- [x] ingest all gh issues from all repos and skip the ingestion when running the pipeline.
+- [x] store the whole prompt in the metrics file. 
+- [x] store retrieved file paths in metrics. 
+- [x] check if the image URL is being passed in the prompt to the LLM. 
 - [x] if the instance has no images, skip it. (Dev w/ image 102/102; Test w/ image 462/510)
 - [x] send the image file to the LLM, not just the retrieved context. 
 - [x] make image downloading and storage mandatory during ingestion. 

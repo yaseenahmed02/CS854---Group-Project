@@ -1,8 +1,9 @@
 # Qdrant data
 data/qdrant/
 .env
-results/
 data/raw/
+results/*
+!results/consolidated/
 data/repos/
 
 # Python
@@ -56,6 +57,7 @@ benchmark/results/*.csv
 
 # Logs
 *.log
+logs/
 
 # OS
 .DS_Store

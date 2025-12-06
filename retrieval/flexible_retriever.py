@@ -129,8 +129,8 @@ class FlexibleRetriever:
                 time_ms = point.payload.get("vlm_generation_time_ms", 0)
                 if desc:
                     context.append({
-                        "description": desc,
-                        "generation_time_ms": time_ms,
+                        "vlm_description": desc,
+                        "vlm_generation_time_ms": time_ms,
                         "image_url": point.payload.get("image_url"),
                         "image_base64": point.payload.get("image_base64")
                     })
@@ -141,7 +141,7 @@ class FlexibleRetriever:
     def _fetch_visual_descriptions(self, instance_id: str) -> List[str]:
         """Legacy wrapper for backward compatibility."""
         context = self._fetch_visual_context(instance_id)
-        return [item['description'] for item in context]
+        return [item['vlm_description'] for item in context]
 
     def retrieve(self, 
                  query: str, 
@@ -175,31 +175,53 @@ class FlexibleRetriever:
         # 2. Execute Strategies
         all_results = []
         
+        # Metrics
+        search_time_ms = 0.0
+        runtime_embedding_time_ms = 0.0
+        visual_embedding_time_ms = 0.0
+        search_time_breakdown = {
+            "search_time_ms_bm25": 0.0,
+            "search_time_ms_dense_jina": 0.0,
+            "search_time_ms_splade": 0.0,
+            "search_time_ms_bge": 0.0
+        }
+        
         # If visual_mode is fusion, we treat the visual query as a separate "strategy" execution effectively
         # But usually fusion means: Query(Text) + Query(Visual) -> Fuse
         # Here we have multiple strategies (Jina, Splade) AND potential visual fusion.
         # Let's simplify: If fusion, we run the strategies for Text Query AND Visual Query, then fuse all.
         
         queries_to_run = [query]
+        is_visual_query = [False]
+        
         if visual_mode == "fusion" and vlm_descs:
             queries_to_run.extend(vlm_descs)
+            is_visual_query.extend([True] * len(vlm_descs))
             print(f"Running separate visual queries for fusion ({len(vlm_descs)} images)")
         elif visual_mode == "visual_only" and vlm_descs:
             queries_to_run = vlm_descs
+            is_visual_query = [True] * len(vlm_descs)
             print(f"Running visual-only queries ({len(vlm_descs)} images)")
         elif visual_mode == "visual_only" and not vlm_descs:
             print("Warning: visual_only mode requested but no VLM description found. Returning empty results.")
             queries_to_run = []
+            is_visual_query = []
 
-        for q in queries_to_run:
+        for q, is_visual in zip(queries_to_run, is_visual_query):
             for strat in strategy:
                 print(f"Running strategy: {strat} for query: {q[:50]}...")
                 
                 if strat == "bm25":
-                    bm25 = self._get_bm25()
-                    tokenized_query = self._tokenize(q)
-                    scores = bm25.get_scores(tokenized_query)
-                    top_n = np.argsort(scores)[::-1][:top_k*2] # Get more for fusion
+                    # BM25 Search Time
+                    with measure_time() as t:
+                        bm25 = self._get_bm25()
+                        tokenized_query = self._tokenize(q)
+                        scores = bm25.get_scores(tokenized_query)
+                        top_n = np.argsort(scores)[::-1][:top_k*2] # Get more for fusion
+                    
+                    elapsed = t['elapsed_ms']
+                    search_time_ms += elapsed
+                    search_time_breakdown[f"search_time_ms_{strat}"] += elapsed
                     
                     strat_results = []
                     for idx in top_n:
@@ -214,7 +236,15 @@ class FlexibleRetriever:
                 elif strat in ["dense_jina", "splade", "bge"]:
                     # Qdrant Retrieval
                     model = self._get_model(strat)
-                    emb = model.embed_query(q)
+                    
+                    # Measure Embedding Time
+                    with measure_time() as t_embed:
+                        emb = model.embed_query(q)
+                    
+                    embed_elapsed = t_embed['elapsed_ms']
+                    runtime_embedding_time_ms += embed_elapsed
+                    if is_visual:
+                        visual_embedding_time_ms += embed_elapsed
                     
                     search_params = None
                     query_vector = None
@@ -258,13 +288,18 @@ class FlexibleRetriever:
                             values=list(idx_to_val.values())
                         )
                     
-                    # Search using query_points
-                    search_result = self.client.query_points(
-                        collection_name=self.collection_name,
-                        query=query_vector,
-                        using=vector_name,
-                        limit=top_k*2
-                    ).points
+                    # Measure Search Time
+                    with measure_time() as t_search:
+                        search_result = self.client.query_points(
+                            collection_name=self.collection_name,
+                            query=query_vector,
+                            using=vector_name,
+                            limit=top_k*2
+                        ).points
+                    
+                    elapsed = t_search['elapsed_ms']
+                    search_time_ms += elapsed
+                    search_time_breakdown[f"search_time_ms_{strat}"] += elapsed
                     
                     strat_results = []
                     for hit in search_result:
@@ -284,7 +319,11 @@ class FlexibleRetriever:
             "results": fused_results[:top_k],
             "retrieved_documents": fused_results[:top_k],
             "strategies": strategy,
-            "visual_mode": visual_mode
+            "visual_mode": visual_mode,
+            "search_time_ms": search_time_ms,
+            "runtime_embedding_time_ms": runtime_embedding_time_ms,
+            "visual_embedding_time_ms": visual_embedding_time_ms,
+            "search_time_breakdown": search_time_breakdown
         }
 
     def _fuse_rankings(self, results_list: List[List[Dict]], k: int = 60) -> List[Dict]:

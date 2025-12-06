@@ -5,6 +5,7 @@ import uuid
 import json
 import requests
 import base64
+import tiktoken
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 from dotenv import load_dotenv
@@ -60,9 +61,9 @@ Focus on:
 
 Output a concise, dense technical description that can be used to search the codebase."""
 
-    user_prompt = f"""Issue Context: {issue_text[:500]}...
+    user_prompt = f"""Issue Context: {issue_text}
 
-Please analyze the attached screenshot and provide the technical reverse-engineering description."""
+Please analyze the provided image and generate the technical reverse-engineering description."""
 
     try:
         response = client.chat.completions.create(
@@ -83,7 +84,7 @@ Please analyze the attached screenshot and provide the technical reverse-enginee
                     ],
                 },
             ],
-            max_tokens=1024,
+            max_tokens=4096,
         )
         return response.choices[0].message.content
     except Exception as e:
@@ -107,6 +108,13 @@ def download_and_encode_image(url: str) -> Optional[str]:
     except Exception as e:
         print(f"Error downloading image {url}: {e}")
         return None
+
+def get_token_count(text: str, model: str = "gpt-4o") -> int:
+    try:
+        encoding = tiktoken.encoding_for_model(model)
+    except KeyError:
+        encoding = tiktoken.get_encoding("cl100k_base")
+    return len(encoding.encode(text))
 
 def ingest_images(limit: int = None, mock_vlm: bool = False, split: str = "test", repo_filter: str = None, version_filter: str = None, vlm_model: str = "gpt-4o-2024-08-06"):
     """
@@ -214,6 +222,9 @@ def ingest_images(limit: int = None, mock_vlm: bool = False, split: str = "test"
             end_time = time.time()
             vlm_time_ms = (end_time - start_time) * 1000
             
+            # Calculate tokens
+            vlm_tokens = get_token_count(vlm_desc, model=vlm_model)
+            
             # Embed Description
             embedding = dense_gen.embed_query(vlm_desc)
             
@@ -239,7 +250,8 @@ def ingest_images(limit: int = None, mock_vlm: bool = False, split: str = "test"
                     "original_issue": problem_statement[:200],
                     "image_base64": image_base64,
                     "vlm_model": "mock" if mock_vlm else vlm_model,
-                    "vlm_generation_time_ms": vlm_time_ms
+                    "vlm_generation_time_ms": vlm_time_ms,
+                    "vlm_tokens": vlm_tokens
                 }
             )
             points.append(point)

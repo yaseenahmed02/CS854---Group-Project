@@ -4,6 +4,7 @@ import questionary
 from datasets import load_dataset
 from typing import List, Dict, Any
 import json
+import pathlib
 
 # Add project root to path
 sys.path.insert(0, os.getcwd())
@@ -184,8 +185,16 @@ def main():
     # Phase 3: Experiment Runner
     print("\n[Phase 3] Starting Offline Experiments...")
     
+    # Create timestamped run directory
+    import time
+    timestamp = time.strftime("%Y-%m-%d_%H-%M")
+    run_dir = pathlib.Path("results") / timestamp
+    run_dir.mkdir(parents=True, exist_ok=True)
+    
+    predictions_dir = run_dir / "swebench_predictions"
+    
     from offline_experiment_runner import OfflineExperimentRunner
-    runner = OfflineExperimentRunner()
+    runner = OfflineExperimentRunner(output_dir=str(predictions_dir))
     runner.run(final_instances, mock_llm=use_mock)
     
     print("\n[Phase 3] Experiments Completed!")
@@ -196,10 +205,9 @@ def main():
     if run_eval:
         print("\n[Phase 4] Starting Evaluation...")
         import subprocess
-        from pathlib import Path
         
-        results_dir = Path("results/swebench_predictions")
-        eval_dir = Path("results/swebench_evaluation")
+        results_dir = predictions_dir
+        eval_dir = run_dir / "swebench_evaluation"
         eval_dir.mkdir(parents=True, exist_ok=True)
         
         for pred_file in results_dir.glob("*_predictions.json"):
@@ -227,7 +235,7 @@ def main():
         
         # Move logs
         if os.path.exists("logs"):
-            logs_dest = Path("results/logs")
+            logs_dest = run_dir / "logs"
             logs_dest.parent.mkdir(parents=True, exist_ok=True)
             if logs_dest.exists():
                 shutil.rmtree(logs_dest)
@@ -235,7 +243,7 @@ def main():
             print(f"Moved logs to {logs_dest}")
 
         # Move any JSON reports from root to eval dir
-        for json_file in Path(".").glob("*.json"):
+        for json_file in pathlib.Path(".").glob("*.json"):
             if ".eval_" in json_file.name and json_file.name not in ["package.json", "tsconfig.json"]: # Avoid moving project files
                 dest = eval_dir / json_file.name
                 shutil.move(str(json_file), str(dest))

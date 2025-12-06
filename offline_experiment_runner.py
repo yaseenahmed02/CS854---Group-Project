@@ -272,7 +272,7 @@ class OfflineExperimentRunner:
             print(f"Saved predictions to {output_file}")
 
             # Save Instance Metrics
-            metrics_file = self.output_dir.parent / "instance_metrics.json"
+            metrics_file = self.output_dir / "instance_metrics.json"
             existing_metrics = []
             if metrics_file.exists():
                 try:
